@@ -1,0 +1,45 @@
+# Claude Code local config
+.claude/
+
+# Env / secrets
+.env
+.env.local
+*.env
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+vendor/
+
+# Dashboard (Node/Vite)
+dashboard/node_modules/
+dashboard/dist/
+dashboard/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Local DB / data
+*.db
+*.sqlite
+*.sqlite3
+data/
