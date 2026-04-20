@@ -26,7 +26,7 @@ func WithTestDB(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(func() { pool.Close() })
 
-	_, err = pool.Exec(ctx, `TRUNCATE audit_log, admin_users, api_keys, tenants RESTART IDENTITY CASCADE`)
+	_, err = pool.Exec(ctx, `TRUNCATE messages, audit_log, admin_users, api_keys, tenants RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
