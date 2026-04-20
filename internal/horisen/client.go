@@ -3,6 +3,7 @@ package horisen
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,10 +23,20 @@ type Client struct {
 
 // Config holds the wiring for a Client.
 type Config struct {
-	BaseURL  string        // e.g. https://sms.horisen.com
+	BaseURL  string        // e.g. https://sms.horisen.com or https://194.0.137.123:42108
 	Username string
 	Password string
 	Timeout  time.Duration // per-request timeout; defaults to 15s
+
+	// TLSServerName overrides the hostname used for TLS verification.
+	// Useful when BaseURL is an IP but the provider's cert is wildcard
+	// for a different domain (e.g. *.horisen.pro). Leave empty to use
+	// the BaseURL host normally.
+	TLSServerName string
+
+	// InsecureSkipVerify disables TLS certificate validation entirely.
+	// Only set in non-prod environments. Prefer TLSServerName instead.
+	InsecureSkipVerify bool
 }
 
 func New(cfg Config) (*Client, error) {
@@ -42,11 +53,20 @@ func New(cfg Config) (*Client, error) {
 	if timeout <= 0 {
 		timeout = 15 * time.Second
 	}
+
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if cfg.TLSServerName != "" || cfg.InsecureSkipVerify {
+		transport.TLSClientConfig = &tls.Config{
+			ServerName:         cfg.TLSServerName,
+			InsecureSkipVerify: cfg.InsecureSkipVerify,
+		}
+	}
+
 	return &Client{
 		baseURL:    cfg.BaseURL,
 		username:   cfg.Username,
 		password:   cfg.Password,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Timeout: timeout, Transport: transport},
 	}, nil
 }
 

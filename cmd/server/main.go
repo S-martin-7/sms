@@ -42,9 +42,10 @@ func main() {
 	// Start the Horisen outbox worker (only if creds are configured).
 	if cfg.HorisenBaseURL != "" && cfg.HorisenUsername != "" && cfg.HorisenPassword != "" {
 		hc, err := horisen.New(horisen.Config{
-			BaseURL:  cfg.HorisenBaseURL,
-			Username: cfg.HorisenUsername,
-			Password: cfg.HorisenPassword,
+			BaseURL:       cfg.HorisenBaseURL,
+			Username:      cfg.HorisenUsername,
+			Password:      cfg.HorisenPassword,
+			TLSServerName: cfg.HorisenTLSServerName,
 		})
 		if err != nil {
 			log.Fatal().Err(err).Msg("horisen client init failed")
