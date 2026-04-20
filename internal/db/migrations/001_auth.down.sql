@@ -1,0 +1,4 @@
+DROP TABLE IF EXISTS audit_log;
+DROP TABLE IF EXISTS admin_users;
+DROP TABLE IF EXISTS api_keys;
+DROP TABLE IF EXISTS tenants;
