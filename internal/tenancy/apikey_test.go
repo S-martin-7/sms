@@ -44,7 +44,8 @@ func TestAPIKey_Lifecycle(t *testing.T) {
 func TestAPIKey_VerifyUnknownPrefix(t *testing.T) {
 	pool := db.WithTestDB(t)
 	svc := tenancy.NewService(pool)
-	_, err := svc.VerifyAPIKey(context.Background(), "sk_live_"+"unknown0000000000000000000000000000000000", pepper)
+	// 51-char token (sk_live_ + 43 zeros) with the correct shape but unknown prefix
+	_, err := svc.VerifyAPIKey(context.Background(), "sk_live_"+"0000000000000000000000000000000000000000000", pepper)
 	if err != tenancy.ErrAPIKeyNotFound {
 		t.Errorf("err = %v, want ErrAPIKeyNotFound", err)
 	}
