@@ -1,0 +1,18 @@
+[Unit]
+Description=SMS Gateway (Horisen wrapper)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/sms
+EnvironmentFile=/root/sms/.env
+ExecStart=/root/sms/sms-server
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
