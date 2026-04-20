@@ -109,6 +109,16 @@ type sendResponse struct {
 	Result SendResult `json:"result"`
 }
 
+// errorResponse matches Horisen's error body shape, used when the HTTP
+// status is 4xx with a JSON payload like:
+//   {"error":{"code":"104","message":"Sending from client's IP not allowed"}}
+type errorResponse struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 // SendSMS posts a single SMS to /bulk/sendsms. Returns the decoded result.
 // Returns a *Error when Horisen replies with a non-success code.
 // Returns plain errors for transport-level failures (timeout, non-JSON, 5xx).
@@ -157,6 +167,16 @@ func (c *Client) SendSMS(ctx context.Context, p SendParams) (*SendResult, error)
 		return nil, fmt.Errorf("horisen: upstream %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusOK {
+		// Try to decode Horisen's error body shape. If the code field is
+		// populated, surface it as a *Error so the caller can classify
+		// retryable vs permanent.
+		var errBody errorResponse
+		if err := json.Unmarshal(raw, &errBody); err == nil && errBody.Error.Code != "" {
+			var n int
+			if _, perr := fmt.Sscanf(errBody.Error.Code, "%d", &n); perr == nil {
+				return nil, &Error{Code: Code(n), Description: errBody.Error.Message}
+			}
+		}
 		return nil, fmt.Errorf("horisen: http %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 

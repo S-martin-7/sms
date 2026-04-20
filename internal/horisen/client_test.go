@@ -132,6 +132,26 @@ func TestSendSMS_throttled_isRetryable(t *testing.T) {
 	}
 }
 
+func TestSendSMS_http420_withHorisenErrorBody_returnsTypedError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(420)
+		_, _ = w.Write([]byte(`{"error":{"code":"104","message":"Sending from client's IP not allowed"}}`))
+	})
+	_, err := c.SendSMS(context.Background(), SendParams{
+		Sender: "S", Receiver: "4179000000", Text: "x",
+	})
+	var herr *Error
+	if !errors.As(err, &herr) {
+		t.Fatalf("want *Error, got %T %v", err, err)
+	}
+	if herr.Code != 104 {
+		t.Errorf("code = %d, want 104", herr.Code)
+	}
+	if IsRetryable(herr.Code) {
+		t.Error("104 must not be retryable")
+	}
+}
+
 func TestSendSMS_http5xx_isTransportError(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
