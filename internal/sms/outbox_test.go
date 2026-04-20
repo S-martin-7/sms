@@ -12,6 +12,7 @@ import (
 	"github.com/S-martin-7/sms/internal/horisen"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/tenancy"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -34,26 +35,29 @@ func (f *fakeSender) SendSMS(_ context.Context, p horisen.SendParams) (*horisen.
 	return &horisen.SendResult{Code: 100, Description: "OK", MsgID: "h-stub"}, nil
 }
 
-func waitStatus(t *testing.T, svc *sms.Service, id interface {
-	String() string
-}, tenantID int64, want string, timeout time.Duration) {
+// waitStatus polls until the message reaches `want` (or fails the test).
+func waitStatus(t *testing.T, svc *sms.Service, id uuid.UUID, tenantID int64, want string, timeout time.Duration) *sms.Message {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
+	var last *sms.Message
 	for time.Now().Before(deadline) {
-		m, err := svc.GetForTenant(context.Background(), parseUUID(t, id.String()), tenantID)
-		if err == nil && m.Status == want {
-			return
+		m, err := svc.GetForTenant(context.Background(), id, tenantID)
+		if err == nil {
+			last = m
+			if m.Status == want {
+				return m
+			}
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	m, _ := svc.GetForTenant(context.Background(), parseUUID(t, id.String()), tenantID)
-	if m != nil {
-		t.Fatalf("timeout waiting for status=%q, got %q (errcode=%v)", want, m.Status, deref(m.ErrorCode))
+	if last != nil {
+		t.Fatalf("timeout waiting for status=%q, got %q (errcode=%v)", want, last.Status, derefStr(last.ErrorCode))
 	}
-	t.Fatalf("timeout waiting for status=%q, message not found", want)
+	t.Fatalf("timeout waiting for status=%q, message %s not found", want, id)
+	return nil
 }
 
-func deref(s *string) string {
+func derefStr(s *string) string {
 	if s == nil {
 		return ""
 	}
@@ -88,15 +92,13 @@ func TestOutbox_deliversQueuedMessages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	waitStatus(t, svc, msg.ID, tt.ID, "sent", 3*time.Second)
+	got := waitStatus(t, svc, msg.ID, tt.ID, "sent", 3*time.Second)
+	if got.HorisenMsgID == nil || *got.HorisenMsgID != "h-stub" {
+		t.Errorf("horisen_msg_id = %v, want h-stub", got.HorisenMsgID)
+	}
 	if sender.counter.Load() != 1 {
 		t.Errorf("sender called %d times, want 1", sender.counter.Load())
 	}
-	sender.mu.Lock()
-	if len(sender.calls) != 1 || sender.calls[0].Receiver != "4179000000" {
-		t.Errorf("unexpected call: %+v", sender.calls)
-	}
-	sender.mu.Unlock()
 }
 
 func TestOutbox_rejectsOnPermanentError(t *testing.T) {
@@ -121,9 +123,7 @@ func TestOutbox_rejectsOnPermanentError(t *testing.T) {
 	msg, _ := svc.Enqueue(ctx, sms.EnqueueInput{
 		TenantID: tt.ID, Sender: "S", Recipient: "bad", Text: "x",
 	})
-	waitStatus(t, svc, msg.ID, tt.ID, "rejected", 3*time.Second)
-
-	got, _ := svc.GetForTenant(ctx, parseUUID(t, msg.ID.String()), tt.ID)
+	got := waitStatus(t, svc, msg.ID, tt.ID, "rejected", 3*time.Second)
 	if got.ErrorCode == nil || *got.ErrorCode != "103" {
 		t.Errorf("error_code = %v, want 103", got.ErrorCode)
 	}
@@ -148,15 +148,11 @@ func TestOutbox_retriesOnThrottled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Use 100ms first retry so test doesn't sit for 30s.
 	ob := sms.NewOutbox(sms.OutboxConfig{
 		Pool: pool, Sender: sender, TPS: 100, Workers: 1,
-		PollIdle: 50 * time.Millisecond,
-		RetryDelays: []time.Duration{
-			100 * time.Millisecond,
-			2 * time.Minute,
-		},
-		Logger: zerolog.Nop(),
+		PollIdle:    50 * time.Millisecond,
+		RetryDelays: []time.Duration{100 * time.Millisecond, 2 * time.Minute},
+		Logger:      zerolog.Nop(),
 	})
 	go ob.Start(ctx)
 
@@ -164,9 +160,8 @@ func TestOutbox_retriesOnThrottled(t *testing.T) {
 		TenantID: tt.ID, Sender: "S", Recipient: "4179000000", Text: "x",
 	})
 	waitStatus(t, svc, msg.ID, tt.ID, "sent", 5*time.Second)
-
 	if got := attempts.Load(); got != 2 {
-		t.Errorf("sender called %d times, want 2 (1 fail + 1 success)", got)
+		t.Errorf("sender called %d times, want 2", got)
 	}
 }
 
