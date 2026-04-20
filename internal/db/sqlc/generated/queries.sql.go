@@ -35,6 +35,74 @@ func (q *Queries) AppendAuditLog(ctx context.Context, arg AppendAuditLogParams) 
 	return err
 }
 
+const bumpMessageRetry = `-- name: BumpMessageRetry :exec
+UPDATE messages
+SET status = 'queued',
+    next_attempt_at = $2,
+    error_code = $3,
+    error_message = $4,
+    claimed_at = NULL
+WHERE id = $1
+`
+
+type BumpMessageRetryParams struct {
+	ID            pgtype.UUID
+	NextAttemptAt pgtype.Timestamptz
+	ErrorCode     *string
+	ErrorMessage  *string
+}
+
+func (q *Queries) BumpMessageRetry(ctx context.Context, arg BumpMessageRetryParams) error {
+	_, err := q.db.Exec(ctx, bumpMessageRetry,
+		arg.ID,
+		arg.NextAttemptAt,
+		arg.ErrorCode,
+		arg.ErrorMessage,
+	)
+	return err
+}
+
+const claimQueuedMessage = `-- name: ClaimQueuedMessage :one
+UPDATE messages
+SET status = 'sending',
+    claimed_at = now(),
+    attempts = attempts + 1
+WHERE id = (
+    SELECT id FROM messages
+    WHERE status = 'queued' AND next_attempt_at <= now()
+    ORDER BY next_attempt_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at
+`
+
+func (q *Queries) ClaimQueuedMessage(ctx context.Context) (Message, error) {
+	row := q.db.QueryRow(ctx, claimQueuedMessage)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Sender,
+		&i.Recipient,
+		&i.Text,
+		&i.Dcs,
+		&i.NumParts,
+		&i.Status,
+		&i.HorisenMsgID,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.ClientRef,
+		&i.Attempts,
+		&i.ClaimedAt,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.SentAt,
+		&i.FinalAt,
+	)
+	return i, err
+}
+
 const countAdminUsers = `-- name: CountAdminUsers :one
 SELECT COUNT(*) FROM admin_users
 `
@@ -107,6 +175,61 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 	return i, err
 }
 
+const createMessage = `-- name: CreateMessage :one
+INSERT INTO messages (
+    id, tenant_id, sender, recipient, text, dcs, num_parts, status, client_ref
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, 'queued', $8
+)
+RETURNING id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at
+`
+
+type CreateMessageParams struct {
+	ID        pgtype.UUID
+	TenantID  int64
+	Sender    string
+	Recipient string
+	Text      string
+	Dcs       string
+	NumParts  int16
+	ClientRef *string
+}
+
+func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (Message, error) {
+	row := q.db.QueryRow(ctx, createMessage,
+		arg.ID,
+		arg.TenantID,
+		arg.Sender,
+		arg.Recipient,
+		arg.Text,
+		arg.Dcs,
+		arg.NumParts,
+		arg.ClientRef,
+	)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Sender,
+		&i.Recipient,
+		&i.Text,
+		&i.Dcs,
+		&i.NumParts,
+		&i.Status,
+		&i.HorisenMsgID,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.ClientRef,
+		&i.Attempts,
+		&i.ClaimedAt,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.SentAt,
+		&i.FinalAt,
+	)
+	return i, err
+}
+
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, daily_sms_limit, monthly_budget)
 VALUES ($1, $2, $3)
@@ -169,6 +292,41 @@ func (q *Queries) GetAdminUserByEmail(ctx context.Context, email string) (AdminU
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getMessageForTenant = `-- name: GetMessageForTenant :one
+SELECT id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at FROM messages WHERE id = $1 AND tenant_id = $2
+`
+
+type GetMessageForTenantParams struct {
+	ID       pgtype.UUID
+	TenantID int64
+}
+
+func (q *Queries) GetMessageForTenant(ctx context.Context, arg GetMessageForTenantParams) (Message, error) {
+	row := q.db.QueryRow(ctx, getMessageForTenant, arg.ID, arg.TenantID)
+	var i Message
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Sender,
+		&i.Recipient,
+		&i.Text,
+		&i.Dcs,
+		&i.NumParts,
+		&i.Status,
+		&i.HorisenMsgID,
+		&i.ErrorCode,
+		&i.ErrorMessage,
+		&i.ClientRef,
+		&i.Attempts,
+		&i.ClaimedAt,
+		&i.NextAttemptAt,
+		&i.CreatedAt,
+		&i.SentAt,
+		&i.FinalAt,
 	)
 	return i, err
 }
@@ -257,6 +415,57 @@ func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
 	return items, nil
 }
 
+const listMessagesByTenant = `-- name: ListMessagesByTenant :many
+SELECT id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at FROM messages
+WHERE tenant_id = $1
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type ListMessagesByTenantParams struct {
+	TenantID int64
+	Limit    int32
+}
+
+func (q *Queries) ListMessagesByTenant(ctx context.Context, arg ListMessagesByTenantParams) ([]Message, error) {
+	rows, err := q.db.Query(ctx, listMessagesByTenant, arg.TenantID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Message
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Sender,
+			&i.Recipient,
+			&i.Text,
+			&i.Dcs,
+			&i.NumParts,
+			&i.Status,
+			&i.HorisenMsgID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.ClientRef,
+			&i.Attempts,
+			&i.ClaimedAt,
+			&i.NextAttemptAt,
+			&i.CreatedAt,
+			&i.SentAt,
+			&i.FinalAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTenants = `-- name: ListTenants :many
 SELECT id, name, status, daily_sms_limit, monthly_budget, created_at, updated_at FROM tenants ORDER BY id
 `
@@ -287,6 +496,57 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 		return nil, err
 	}
 	return items, nil
+}
+
+const markMessageRejected = `-- name: MarkMessageRejected :exec
+UPDATE messages
+SET status = 'rejected',
+    error_code = $2,
+    error_message = $3,
+    final_at = now(),
+    claimed_at = NULL
+WHERE id = $1
+`
+
+type MarkMessageRejectedParams struct {
+	ID           pgtype.UUID
+	ErrorCode    *string
+	ErrorMessage *string
+}
+
+func (q *Queries) MarkMessageRejected(ctx context.Context, arg MarkMessageRejectedParams) error {
+	_, err := q.db.Exec(ctx, markMessageRejected, arg.ID, arg.ErrorCode, arg.ErrorMessage)
+	return err
+}
+
+const markMessageSent = `-- name: MarkMessageSent :exec
+UPDATE messages
+SET status = 'sent',
+    horisen_msg_id = $2,
+    sent_at = now(),
+    claimed_at = NULL
+WHERE id = $1
+`
+
+type MarkMessageSentParams struct {
+	ID           pgtype.UUID
+	HorisenMsgID *string
+}
+
+func (q *Queries) MarkMessageSent(ctx context.Context, arg MarkMessageSentParams) error {
+	_, err := q.db.Exec(ctx, markMessageSent, arg.ID, arg.HorisenMsgID)
+	return err
+}
+
+const recoverStaleSending = `-- name: RecoverStaleSending :exec
+UPDATE messages
+SET status = 'queued', claimed_at = NULL
+WHERE status = 'sending' AND claimed_at < $1
+`
+
+func (q *Queries) RecoverStaleSending(ctx context.Context, claimedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, recoverStaleSending, claimedAt)
+	return err
 }
 
 const revokeAPIKey = `-- name: RevokeAPIKey :exec

@@ -39,6 +39,27 @@ type AuditLog struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Message struct {
+	ID            pgtype.UUID
+	TenantID      int64
+	Sender        string
+	Recipient     string
+	Text          string
+	Dcs           string
+	NumParts      int16
+	Status        string
+	HorisenMsgID  *string
+	ErrorCode     *string
+	ErrorMessage  *string
+	ClientRef     *string
+	Attempts      int32
+	ClaimedAt     pgtype.Timestamptz
+	NextAttemptAt pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	SentAt        pgtype.Timestamptz
+	FinalAt       pgtype.Timestamptz
+}
+
 type Tenant struct {
 	ID            int64
 	Name          string
