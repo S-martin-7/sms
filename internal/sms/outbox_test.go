@@ -73,7 +73,7 @@ func TestOutbox_deliversQueuedMessages(t *testing.T) {
 	sender := &fakeSender{}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	ob := sms.NewOutbox(sms.OutboxConfig{
 		Pool:     pool,
@@ -83,7 +83,16 @@ func TestOutbox_deliversQueuedMessages(t *testing.T) {
 		PollIdle: 50 * time.Millisecond,
 		Logger:   zerolog.Nop(),
 	})
-	go ob.Start(ctx)
+	obDone := make(chan struct{})
+	go func() { ob.Start(ctx); close(obDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-obDone:
+		case <-time.After(3 * time.Second):
+			t.Error("outbox did not stop within 3s after ctx cancel")
+		}
+	})
 
 	msg, err := svc.Enqueue(ctx, sms.EnqueueInput{
 		TenantID: tt.ID, Sender: "Test", Recipient: "4179000000", Text: "hola",
@@ -118,7 +127,16 @@ func TestOutbox_rejectsOnPermanentError(t *testing.T) {
 		Pool: pool, Sender: sender, TPS: 100, Workers: 1,
 		PollIdle: 50 * time.Millisecond, Logger: zerolog.Nop(),
 	})
-	go ob.Start(ctx)
+	obDone := make(chan struct{})
+	go func() { ob.Start(ctx); close(obDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-obDone:
+		case <-time.After(3 * time.Second):
+			t.Error("outbox did not stop within 3s after ctx cancel")
+		}
+	})
 
 	msg, _ := svc.Enqueue(ctx, sms.EnqueueInput{
 		TenantID: tt.ID, Sender: "S", Recipient: "bad", Text: "x",
@@ -146,7 +164,7 @@ func TestOutbox_retriesOnThrottled(t *testing.T) {
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	t.Cleanup(cancel)
 
 	ob := sms.NewOutbox(sms.OutboxConfig{
 		Pool: pool, Sender: sender, TPS: 100, Workers: 1,
@@ -154,7 +172,16 @@ func TestOutbox_retriesOnThrottled(t *testing.T) {
 		RetryDelays: []time.Duration{100 * time.Millisecond, 2 * time.Minute},
 		Logger:      zerolog.Nop(),
 	})
-	go ob.Start(ctx)
+	obDone := make(chan struct{})
+	go func() { ob.Start(ctx); close(obDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-obDone:
+		case <-time.After(3 * time.Second):
+			t.Error("outbox did not stop within 3s after ctx cancel")
+		}
+	})
 
 	msg, _ := svc.Enqueue(ctx, sms.EnqueueInput{
 		TenantID: tt.ID, Sender: "S", Recipient: "4179000000", Text: "x",
@@ -188,7 +215,16 @@ func TestOutbox_transportErrorRetries(t *testing.T) {
 		RetryDelays: []time.Duration{100 * time.Millisecond, time.Minute},
 		Logger:      zerolog.Nop(),
 	})
-	go ob.Start(ctx)
+	obDone := make(chan struct{})
+	go func() { ob.Start(ctx); close(obDone) }()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-obDone:
+		case <-time.After(3 * time.Second):
+			t.Error("outbox did not stop within 3s after ctx cancel")
+		}
+	})
 
 	msg, _ := svc.Enqueue(ctx, sms.EnqueueInput{
 		TenantID: tt.ID, Sender: "S", Recipient: "4179000000", Text: "x",

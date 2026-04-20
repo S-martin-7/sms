@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	sqlcgen "github.com/S-martin-7/sms/internal/db/sqlc/generated"
@@ -63,26 +64,30 @@ func NewOutbox(cfg OutboxConfig) *Outbox {
 }
 
 // Start spawns the worker pool + a stale-sending janitor. Blocks until ctx
-// is cancelled.
+// is cancelled and every goroutine has returned — important for tests that
+// reuse the same Postgres DB between test functions.
 func (o *Outbox) Start(ctx context.Context) {
 	o.cfg.Logger.Info().
 		Int("workers", o.cfg.Workers).
 		Int("tps", o.cfg.TPS).
 		Msg("outbox starting")
 
-	done := make(chan struct{})
+	var wg sync.WaitGroup
 	for i := 0; i < o.cfg.Workers; i++ {
+		wg.Add(1)
 		i := i
 		go func() {
+			defer wg.Done()
 			o.worker(ctx, i)
-			done <- struct{}{}
 		}()
 	}
-	go o.janitor(ctx)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		o.janitor(ctx)
+	}()
 
-	for i := 0; i < o.cfg.Workers; i++ {
-		<-done
-	}
+	wg.Wait()
 	o.cfg.Logger.Info().Msg("outbox stopped")
 }
 
