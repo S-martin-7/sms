@@ -17,6 +17,15 @@ type Config struct {
 	BcryptCost      int
 	LogLevel        string
 	Env             string
+
+	// Horisen provider config (required once we enable /v1/sms send).
+	HorisenBaseURL         string
+	HorisenUsername        string
+	HorisenPassword        string
+	HorisenTPS             int
+	HorisenValiditySec     int
+	HorisenCallbackSecret  string
+	PublicBaseURL          string
 }
 
 func Load() (*Config, error) {
@@ -31,6 +40,14 @@ func Load() (*Config, error) {
 	}
 	cfg.JWTTTLHours = envInt("JWT_TTL_HOURS", 12)
 	cfg.BcryptCost = envInt("BCRYPT_COST", 12)
+
+	cfg.HorisenBaseURL = os.Getenv("HORISEN_BASE_URL")
+	cfg.HorisenUsername = os.Getenv("HORISEN_USERNAME")
+	cfg.HorisenPassword = os.Getenv("HORISEN_PASSWORD")
+	cfg.HorisenTPS = envInt("HORISEN_TPS", 10)
+	cfg.HorisenValiditySec = envInt("HORISEN_VALIDITY_SEC", 86400)
+	cfg.HorisenCallbackSecret = os.Getenv("HORISEN_CALLBACK_SECRET")
+	cfg.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
 
 	var missing []string
 	if cfg.DatabaseURL == "" {
