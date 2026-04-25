@@ -32,7 +32,7 @@ func (f *fakeSender) SendSMS(_ context.Context, p horisen.SendParams) (*horisen.
 	if f.next != nil {
 		return f.next(p)
 	}
-	return &horisen.SendResult{Code: 100, Description: "OK", MsgID: "h-stub"}, nil
+	return &horisen.SendResult{MsgID: "h-stub", NumParts: 1}, nil
 }
 
 // waitStatus polls until the message reaches `want` (or fails the test).
@@ -160,7 +160,7 @@ func TestOutbox_retriesOnThrottled(t *testing.T) {
 			if n == 1 {
 				return nil, &horisen.Error{Code: 105, Description: "throttled"}
 			}
-			return &horisen.SendResult{Code: 100, MsgID: "h-after-retry"}, nil
+			return &horisen.SendResult{MsgID: "h-after-retry", NumParts: 1}, nil
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -204,7 +204,7 @@ func TestOutbox_transportErrorRetries(t *testing.T) {
 			if attempts.Add(1) == 1 {
 				return nil, errors.New("dial tcp: boom")
 			}
-			return &horisen.SendResult{Code: 100, MsgID: "h-ok"}, nil
+			return &horisen.SendResult{MsgID: "h-ok", NumParts: 1}, nil
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())

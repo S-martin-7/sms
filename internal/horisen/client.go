@@ -82,10 +82,13 @@ type SendParams struct {
 }
 
 // SendResult is the decoded response from Horisen after a submission.
+//
+// On success Horisen returns HTTP 202 with a flat body:
+//   {"msgId":"<uuid>","numParts":1}
+// (no `result` wrapper, no `code` field — the 2xx status itself is success).
 type SendResult struct {
-	Code        Code   `json:"code"`
-	Description string `json:"description"`
-	MsgID       string `json:"msgId"`
+	MsgID    string `json:"msgId"`
+	NumParts int    `json:"numParts"`
 }
 
 type sendRequest struct {
@@ -103,10 +106,6 @@ type sendRequest struct {
 type authBlock struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
-}
-
-type sendResponse struct {
-	Result SendResult `json:"result"`
 }
 
 // errorResponse matches Horisen's error body shape, used when the HTTP
@@ -166,7 +165,7 @@ func (c *Client) SendSMS(ctx context.Context, p SendParams) (*SendResult, error)
 	if resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("horisen: upstream %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
-	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusOK {
+	if resp.StatusCode >= 400 {
 		// Try to decode Horisen's error body shape. If the code field is
 		// populated, surface it as a *Error so the caller can classify
 		// retryable vs permanent.
@@ -180,15 +179,15 @@ func (c *Client) SendSMS(ctx context.Context, p SendParams) (*SendResult, error)
 		return nil, fmt.Errorf("horisen: http %d: %s", resp.StatusCode, truncate(string(raw), 200))
 	}
 
-	var parsed sendResponse
-	if err := json.Unmarshal(raw, &parsed); err != nil {
+	// 2xx success — Horisen returns 202 with {"msgId":"...","numParts":N}.
+	var result SendResult
+	if err := json.Unmarshal(raw, &result); err != nil {
 		return nil, fmt.Errorf("horisen: decode response: %w (body=%q)", err, truncate(string(raw), 200))
 	}
-
-	if !IsSuccess(parsed.Result.Code) {
-		return &parsed.Result, &Error{Code: parsed.Result.Code, Description: parsed.Result.Description}
+	if result.MsgID == "" {
+		return nil, fmt.Errorf("horisen: 2xx without msgId (body=%q)", truncate(string(raw), 200))
 	}
-	return &parsed.Result, nil
+	return &result, nil
 }
 
 func truncate(s string, n int) string {

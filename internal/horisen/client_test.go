@@ -56,8 +56,10 @@ func TestSendSMS_happyPath(t *testing.T) {
 		if req.Custom["msgId"] != "m-1" {
 			t.Errorf("custom not forwarded: %v", req.Custom)
 		}
+		// Real Horisen success: HTTP 202 + flat body.
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"result":{"code":100,"description":"OK","msgId":"abc-123"}}`))
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"msgId":"abc-123","numParts":1}`))
 	})
 
 	res, err := c.SendSMS(context.Background(), SendParams{
@@ -71,7 +73,7 @@ func TestSendSMS_happyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if res.Code != 100 || res.MsgID != "abc-123" {
+	if res.MsgID != "abc-123" || res.NumParts != 1 {
 		t.Errorf("result = %+v", res)
 	}
 }
@@ -83,7 +85,8 @@ func TestSendSMS_autoDetectsDCS(t *testing.T) {
 		var req sendRequest
 		_ = json.Unmarshal(body, &req)
 		captured = req.DCS
-		_, _ = w.Write([]byte(`{"result":{"code":100,"description":"OK","msgId":"x"}}`))
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"msgId":"x","numParts":1}`))
 	})
 	_, err := c.SendSMS(context.Background(), SendParams{
 		Sender: "S", Receiver: "4179000000", Text: "Hi 👋 emoji",
@@ -99,7 +102,8 @@ func TestSendSMS_autoDetectsDCS(t *testing.T) {
 
 func TestSendSMS_horisenError_returnsTypedError(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"result":{"code":103,"description":"invalid receiver","msgId":""}}`))
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"103","message":"invalid receiver"}}`))
 	})
 	_, err := c.SendSMS(context.Background(), SendParams{
 		Sender: "S", Receiver: "9", Text: "x",
@@ -121,7 +125,8 @@ func TestSendSMS_horisenError_returnsTypedError(t *testing.T) {
 
 func TestSendSMS_throttled_isRetryable(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"result":{"code":105,"description":"throttled","msgId":""}}`))
+		w.WriteHeader(420)
+		_, _ = w.Write([]byte(`{"error":{"code":"105","message":"throttled"}}`))
 	})
 	_, err := c.SendSMS(context.Background(), SendParams{
 		Sender: "S", Receiver: "4179000000", Text: "x",
@@ -129,6 +134,22 @@ func TestSendSMS_throttled_isRetryable(t *testing.T) {
 	var herr *Error
 	if !errors.As(err, &herr) || !IsRetryable(herr.Code) {
 		t.Fatalf("want retryable *Error, got %T %v", err, err)
+	}
+}
+
+func TestSendSMS_2xxWithoutMsgId_isError(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"numParts":1}`))
+	})
+	_, err := c.SendSMS(context.Background(), SendParams{
+		Sender: "S", Receiver: "4179000000", Text: "x",
+	})
+	if err == nil {
+		t.Fatal("expected error when 2xx response is missing msgId")
+	}
+	if !strings.Contains(err.Error(), "msgId") {
+		t.Errorf("err = %v, want mention of msgId", err)
 	}
 }
 
