@@ -293,3 +293,42 @@ WHERE tenant_id = sqlc.arg(tenant_id)
   AND (sqlc.narg(to_time)::timestamptz   IS NULL OR created_at <  sqlc.narg(to_time)::timestamptz)
 ORDER BY created_at DESC, id DESC
 LIMIT sqlc.arg(lim);
+
+-- name: ListMessagesAdminFiltered :many
+-- Same as ListMessagesFiltered but tenant_id is OPTIONAL — used by the
+-- admin /admin/messages endpoint to search across tenants.
+SELECT * FROM messages
+WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR tenant_id = sqlc.narg(tenant_id)::bigint)
+  AND (sqlc.narg(cursor_created_at)::timestamptz IS NULL
+       OR (created_at, id) < (sqlc.narg(cursor_created_at)::timestamptz, sqlc.narg(cursor_id)::uuid))
+  AND (sqlc.narg(status)::text     IS NULL OR status     = sqlc.narg(status)::text)
+  AND (sqlc.narg(recipient)::text  IS NULL OR recipient  = sqlc.narg(recipient)::text)
+  AND (sqlc.narg(client_ref)::text IS NULL OR client_ref = sqlc.narg(client_ref)::text)
+  AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
+  AND (sqlc.narg(to_time)::timestamptz   IS NULL OR created_at <  sqlc.narg(to_time)::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(lim);
+
+-- name: ListWebhookDeliveriesByTenant :many
+-- Cursor is the BIGSERIAL id (DESC). 0 = from newest.
+SELECT * FROM webhook_deliveries
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.arg(cursor_id)::bigint = 0 OR id < sqlc.arg(cursor_id)::bigint)
+  AND (sqlc.narg(status)::text IS NULL OR status = sqlc.narg(status)::text)
+ORDER BY id DESC
+LIMIT sqlc.arg(lim);
+
+-- name: GetWebhookDelivery :one
+-- Used by the retry endpoint; tenant_id required so admin URLs include it
+-- defensively even though an admin can read everything.
+SELECT * FROM webhook_deliveries WHERE id = $1;
+
+-- name: RequeueWebhookDelivery :exec
+-- Reset a failed/dead/success delivery to pending and ready-now. Useful for
+-- admin manual retry. Does NOT clear last_status/last_error so the prior
+-- attempt's diagnostics are preserved until the next attempt overwrites.
+UPDATE webhook_deliveries
+SET status = 'pending',
+    next_attempt_at = now(),
+    claimed_at = NULL
+WHERE id = $1;

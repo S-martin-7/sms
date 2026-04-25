@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+
 // Standard event names. Tenants subscribe to any subset of these per endpoint.
 const (
 	EventSMSDelivered   = "sms.delivered"
@@ -152,6 +153,75 @@ func (s *Service) SetActive(ctx context.Context, id, tenantID int64, active bool
 	return s.q.SetWebhookEndpointActive(ctx, sqlcgen.SetWebhookEndpointActiveParams{
 		ID: id, TenantID: tenantID, Active: active,
 	})
+}
+
+// ListDeliveriesOpts are the filters supported by the admin delivery
+// listing endpoint.
+type ListDeliveriesOpts struct {
+	Status   string // pending|in_flight|success|failed|dead — empty = all
+	CursorID int64  // BIGSERIAL id, 0 = from newest
+	Limit    int    // capped to 200; 0 → 50
+}
+
+// ListDeliveriesByTenant returns webhook delivery rows for a tenant in
+// newest-first order. Used by the admin "webhook deliveries" page.
+func (s *Service) ListDeliveriesByTenant(ctx context.Context, tenantID int64, opts ListDeliveriesOpts) ([]Delivery, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = 50
+	}
+	if opts.Limit > 200 {
+		opts.Limit = 200
+	}
+	params := sqlcgen.ListWebhookDeliveriesByTenantParams{
+		TenantID: tenantID,
+		CursorID: opts.CursorID,
+		Lim:      int32(opts.Limit),
+	}
+	if opts.Status != "" {
+		v := opts.Status
+		params.Status = &v
+	}
+	rows, err := s.q.ListWebhookDeliveriesByTenant(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("list deliveries: %w", err)
+	}
+	out := make([]Delivery, 0, len(rows))
+	for _, r := range rows {
+		d := Delivery{
+			ID:            r.ID,
+			EndpointID:    r.EndpointID,
+			TenantID:      r.TenantID,
+			EventID:       uuidFromPg(r.EventID),
+			EventType:     r.EventType,
+			Status:        r.Status,
+			Attempts:      int(r.Attempts),
+			NextAttemptAt: r.NextAttemptAt.Time,
+			LastStatus:    r.LastStatus,
+			LastError:     r.LastError,
+			CreatedAt:     r.CreatedAt.Time,
+		}
+		if r.DeliveredAt.Valid {
+			t := r.DeliveredAt.Time
+			d.DeliveredAt = &t
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// RequeueDelivery resets a delivery row to pending so the dispatcher will
+// retry it on the next poll cycle. Used by the admin manual-retry button.
+// Does not validate state — intentionally allows replaying success rows
+// for re-delivery testing.
+func (s *Service) RequeueDelivery(ctx context.Context, id int64) error {
+	return s.q.RequeueWebhookDelivery(ctx, id)
+}
+
+func uuidFromPg(u pgtype.UUID) uuid.UUID {
+	if !u.Valid {
+		return uuid.Nil
+	}
+	return uuid.UUID(u.Bytes)
 }
 
 // DeleteEndpoint hard-removes the endpoint and (via FK cascade) its deliveries.

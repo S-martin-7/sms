@@ -37,6 +37,31 @@ func NewRouter(d RouterDeps) http.Handler {
 
 	r.Post("/admin/login", LoginHandler(d.AdminSvc, d.JWTSecret, d.JWTTTL))
 
+	// Admin API — JWT-protected dashboard backend.
+	r.Group(func(r chi.Router) {
+		r.Use(middleware.AdminJWT(d.JWTSecret))
+
+		r.Get("/admin/tenants", AdminListTenantsHandler(d.TenancySvc))
+		r.Post("/admin/tenants", AdminCreateTenantHandler(d.TenancySvc, d.AdminSvc))
+		r.Get("/admin/tenants/{id}", AdminGetTenantHandler(d.TenancySvc))
+		r.Post("/admin/tenants/{id}/suspend", AdminSetTenantStatusHandler(d.TenancySvc, d.AdminSvc, "suspended"))
+		r.Post("/admin/tenants/{id}/activate", AdminSetTenantStatusHandler(d.TenancySvc, d.AdminSvc, "active"))
+
+		r.Get("/admin/tenants/{id}/api-keys", AdminListAPIKeysHandler(d.TenancySvc))
+		r.Post("/admin/tenants/{id}/api-keys", AdminIssueAPIKeyHandler(d.TenancySvc, d.AdminSvc, d.APIKeyPepper))
+		r.Post("/admin/api-keys/{id}/revoke", AdminRevokeAPIKeyHandler(d.TenancySvc, d.AdminSvc))
+
+		r.Get("/admin/messages", AdminListMessagesHandler(d.SMSSvc))
+
+		r.Get("/admin/tenants/{id}/webhooks", AdminListEndpointsForTenantHandler(d.WebhooksSvc))
+		r.Get("/admin/tenants/{id}/webhook-deliveries", AdminListDeliveriesHandler(d.WebhooksSvc))
+		r.Post("/admin/webhook-deliveries/{id}/retry", AdminRetryDeliveryHandler(d.WebhooksSvc, d.AdminSvc))
+
+		r.Get("/admin/inbound-numbers", AdminListInboundNumbersHandler(d.SMSSvc))
+		r.Post("/admin/inbound-numbers", AdminAssignInboundNumberHandler(d.SMSSvc, d.AdminSvc))
+		r.Delete("/admin/inbound-numbers/{msisdn}", AdminUnassignInboundNumberHandler(d.SMSSvc, d.AdminSvc))
+	})
+
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.APIKey(d.TenancySvc, d.APIKeyPepper))
 		r.Get("/v1/ping", PingHandler())

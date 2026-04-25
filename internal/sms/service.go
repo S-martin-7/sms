@@ -198,6 +198,60 @@ func (s *Service) ListMessages(ctx context.Context, tenantID int64, opts ListOpt
 	return out, nil
 }
 
+// AdminListOpts is ListOpts plus an optional TenantID filter — admins
+// can search across tenants or scope to one. Zero TenantID = all tenants.
+type AdminListOpts struct {
+	TenantID int64 // 0 = no tenant filter
+	ListOpts
+}
+
+// AdminListMessages is the cross-tenant variant of ListMessages used by
+// the /admin/messages endpoint.
+func (s *Service) AdminListMessages(ctx context.Context, opts AdminListOpts) ([]*Message, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultListLimit
+	}
+	if opts.Limit > MaxListLimit {
+		opts.Limit = MaxListLimit
+	}
+	params := sqlcgen.ListMessagesAdminFilteredParams{Lim: int32(opts.Limit)}
+	if opts.TenantID != 0 {
+		v := opts.TenantID
+		params.TenantID = &v
+	}
+	if !opts.CursorCreatedAt.IsZero() {
+		params.CursorCreatedAt = pgtype.Timestamptz{Time: opts.CursorCreatedAt, Valid: true}
+		params.CursorID = pgtype.UUID{Bytes: opts.CursorID, Valid: true}
+	}
+	if opts.Status != "" {
+		v := opts.Status
+		params.Status = &v
+	}
+	if opts.Recipient != "" {
+		v := opts.Recipient
+		params.Recipient = &v
+	}
+	if opts.ClientRef != "" {
+		v := opts.ClientRef
+		params.ClientRef = &v
+	}
+	if !opts.From.IsZero() {
+		params.FromTime = pgtype.Timestamptz{Time: opts.From, Valid: true}
+	}
+	if !opts.To.IsZero() {
+		params.ToTime = pgtype.Timestamptz{Time: opts.To, Valid: true}
+	}
+	rows, err := s.q.ListMessagesAdminFiltered(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("admin list messages: %w", err)
+	}
+	out := make([]*Message, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromRow(r))
+	}
+	return out, nil
+}
+
 // GetForTenant returns the message scoped to the calling tenant.
 // ErrNotFound if id doesn't exist OR belongs to another tenant.
 func (s *Service) GetForTenant(ctx context.Context, id uuid.UUID, tenantID int64) (*Message, error) {

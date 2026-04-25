@@ -706,6 +706,35 @@ func (q *Queries) GetTenantByID(ctx context.Context, id int64) (Tenant, error) {
 	return i, err
 }
 
+const getWebhookDelivery = `-- name: GetWebhookDelivery :one
+SELECT id, endpoint_id, tenant_id, event_id, event_type, payload, status, attempts, next_attempt_at, last_status, last_error, last_response, claimed_at, created_at, delivered_at FROM webhook_deliveries WHERE id = $1
+`
+
+// Used by the retry endpoint; tenant_id required so admin URLs include it
+// defensively even though an admin can read everything.
+func (q *Queries) GetWebhookDelivery(ctx context.Context, id int64) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, getWebhookDelivery, id)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.EndpointID,
+		&i.TenantID,
+		&i.EventID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastStatus,
+		&i.LastError,
+		&i.LastResponse,
+		&i.ClaimedAt,
+		&i.CreatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
 SELECT id, tenant_id, url, secret, events, active, created_at FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2
 `
@@ -1040,6 +1069,83 @@ func (q *Queries) ListInboundNumbersByTenant(ctx context.Context, tenantID int64
 	return items, nil
 }
 
+const listMessagesAdminFiltered = `-- name: ListMessagesAdminFiltered :many
+SELECT id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at FROM messages
+WHERE ($1::bigint IS NULL OR tenant_id = $1::bigint)
+  AND ($2::timestamptz IS NULL
+       OR (created_at, id) < ($2::timestamptz, $3::uuid))
+  AND ($4::text     IS NULL OR status     = $4::text)
+  AND ($5::text  IS NULL OR recipient  = $5::text)
+  AND ($6::text IS NULL OR client_ref = $6::text)
+  AND ($7::timestamptz IS NULL OR created_at >= $7::timestamptz)
+  AND ($8::timestamptz   IS NULL OR created_at <  $8::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT $9
+`
+
+type ListMessagesAdminFilteredParams struct {
+	TenantID        *int64
+	CursorCreatedAt pgtype.Timestamptz
+	CursorID        pgtype.UUID
+	Status          *string
+	Recipient       *string
+	ClientRef       *string
+	FromTime        pgtype.Timestamptz
+	ToTime          pgtype.Timestamptz
+	Lim             int32
+}
+
+// Same as ListMessagesFiltered but tenant_id is OPTIONAL — used by the
+// admin /admin/messages endpoint to search across tenants.
+func (q *Queries) ListMessagesAdminFiltered(ctx context.Context, arg ListMessagesAdminFilteredParams) ([]Message, error) {
+	rows, err := q.db.Query(ctx, listMessagesAdminFiltered,
+		arg.TenantID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.Status,
+		arg.Recipient,
+		arg.ClientRef,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Message
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Sender,
+			&i.Recipient,
+			&i.Text,
+			&i.Dcs,
+			&i.NumParts,
+			&i.Status,
+			&i.HorisenMsgID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.ClientRef,
+			&i.Attempts,
+			&i.ClaimedAt,
+			&i.NextAttemptAt,
+			&i.CreatedAt,
+			&i.SentAt,
+			&i.FinalAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMessagesByTenant = `-- name: ListMessagesByTenant :many
 SELECT id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at FROM messages
 WHERE tenant_id = $1
@@ -1200,6 +1306,64 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return items, nil
 }
 
+const listWebhookDeliveriesByTenant = `-- name: ListWebhookDeliveriesByTenant :many
+SELECT id, endpoint_id, tenant_id, event_id, event_type, payload, status, attempts, next_attempt_at, last_status, last_error, last_response, claimed_at, created_at, delivered_at FROM webhook_deliveries
+WHERE tenant_id = $1
+  AND ($2::bigint = 0 OR id < $2::bigint)
+  AND ($3::text IS NULL OR status = $3::text)
+ORDER BY id DESC
+LIMIT $4
+`
+
+type ListWebhookDeliveriesByTenantParams struct {
+	TenantID int64
+	CursorID int64
+	Status   *string
+	Lim      int32
+}
+
+// Cursor is the BIGSERIAL id (DESC). 0 = from newest.
+func (q *Queries) ListWebhookDeliveriesByTenant(ctx context.Context, arg ListWebhookDeliveriesByTenantParams) ([]WebhookDelivery, error) {
+	rows, err := q.db.Query(ctx, listWebhookDeliveriesByTenant,
+		arg.TenantID,
+		arg.CursorID,
+		arg.Status,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookDelivery
+	for rows.Next() {
+		var i WebhookDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.EndpointID,
+			&i.TenantID,
+			&i.EventID,
+			&i.EventType,
+			&i.Payload,
+			&i.Status,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastStatus,
+			&i.LastError,
+			&i.LastResponse,
+			&i.ClaimedAt,
+			&i.CreatedAt,
+			&i.DeliveredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWebhookEndpointsByTenant = `-- name: ListWebhookEndpointsByTenant :many
 SELECT id, tenant_id, url, secret, events, active, created_at FROM webhook_endpoints WHERE tenant_id = $1 ORDER BY id DESC
 `
@@ -1348,6 +1512,22 @@ WHERE status = 'in_flight' AND claimed_at < $1
 // pin them forever.
 func (q *Queries) RecoverStaleWebhookDeliveries(ctx context.Context, claimedAt pgtype.Timestamptz) error {
 	_, err := q.db.Exec(ctx, recoverStaleWebhookDeliveries, claimedAt)
+	return err
+}
+
+const requeueWebhookDelivery = `-- name: RequeueWebhookDelivery :exec
+UPDATE webhook_deliveries
+SET status = 'pending',
+    next_attempt_at = now(),
+    claimed_at = NULL
+WHERE id = $1
+`
+
+// Reset a failed/dead/success delivery to pending and ready-now. Useful for
+// admin manual retry. Does NOT clear last_status/last_error so the prior
+// attempt's diagnostics are preserved until the next attempt overwrites.
+func (q *Queries) RequeueWebhookDelivery(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, requeueWebhookDelivery, id)
 	return err
 }
 
