@@ -106,6 +106,46 @@ func (q *Queries) BumpMessageRetry(ctx context.Context, arg BumpMessageRetryPara
 	return err
 }
 
+const claimPendingDelivery = `-- name: ClaimPendingDelivery :one
+UPDATE webhook_deliveries
+SET status = 'in_flight',
+    claimed_at = now(),
+    attempts = attempts + 1
+WHERE id = (
+    SELECT id FROM webhook_deliveries
+    WHERE status IN ('pending','failed') AND next_attempt_at <= now()
+    ORDER BY next_attempt_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, endpoint_id, tenant_id, event_id, event_type, payload, status, attempts, next_attempt_at, last_status, last_error, last_response, claimed_at, created_at, delivered_at
+`
+
+// Atomically pick one ready delivery and mark it in_flight so other workers
+// skip it. attempts is bumped here so even crashes leave a trail.
+func (q *Queries) ClaimPendingDelivery(ctx context.Context) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, claimPendingDelivery)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.EndpointID,
+		&i.TenantID,
+		&i.EventID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastStatus,
+		&i.LastError,
+		&i.LastResponse,
+		&i.ClaimedAt,
+		&i.CreatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const claimQueuedMessage = `-- name: ClaimQueuedMessage :one
 UPDATE messages
 SET status = 'sending',
@@ -301,6 +341,103 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 	return i, err
 }
 
+const createWebhookEndpoint = `-- name: CreateWebhookEndpoint :one
+
+INSERT INTO webhook_endpoints (tenant_id, url, secret, events, active)
+VALUES ($1, $2, $3, $4, true)
+RETURNING id, tenant_id, url, secret, events, active, created_at
+`
+
+type CreateWebhookEndpointParams struct {
+	TenantID int64
+	Url      string
+	Secret   string
+	Events   []string
+}
+
+// ===== webhook_endpoints =====
+func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEndpointParams) (WebhookEndpoint, error) {
+	row := q.db.QueryRow(ctx, createWebhookEndpoint,
+		arg.TenantID,
+		arg.Url,
+		arg.Secret,
+		arg.Events,
+	)
+	var i WebhookEndpoint
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Secret,
+		&i.Events,
+		&i.Active,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const deleteWebhookEndpoint = `-- name: DeleteWebhookEndpoint :exec
+DELETE FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2
+`
+
+type DeleteWebhookEndpointParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) DeleteWebhookEndpoint(ctx context.Context, arg DeleteWebhookEndpointParams) error {
+	_, err := q.db.Exec(ctx, deleteWebhookEndpoint, arg.ID, arg.TenantID)
+	return err
+}
+
+const enqueueWebhookDelivery = `-- name: EnqueueWebhookDelivery :one
+
+INSERT INTO webhook_deliveries (
+    endpoint_id, tenant_id, event_id, event_type, payload, status, next_attempt_at
+) VALUES (
+    $1, $2, $3, $4, $5, 'pending', now()
+)
+RETURNING id, endpoint_id, tenant_id, event_id, event_type, payload, status, attempts, next_attempt_at, last_status, last_error, last_response, claimed_at, created_at, delivered_at
+`
+
+type EnqueueWebhookDeliveryParams struct {
+	EndpointID int64
+	TenantID   int64
+	EventID    pgtype.UUID
+	EventType  string
+	Payload    []byte
+}
+
+// ===== webhook_deliveries =====
+func (q *Queries) EnqueueWebhookDelivery(ctx context.Context, arg EnqueueWebhookDeliveryParams) (WebhookDelivery, error) {
+	row := q.db.QueryRow(ctx, enqueueWebhookDelivery,
+		arg.EndpointID,
+		arg.TenantID,
+		arg.EventID,
+		arg.EventType,
+		arg.Payload,
+	)
+	var i WebhookDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.EndpointID,
+		&i.TenantID,
+		&i.EventID,
+		&i.EventType,
+		&i.Payload,
+		&i.Status,
+		&i.Attempts,
+		&i.NextAttemptAt,
+		&i.LastStatus,
+		&i.LastError,
+		&i.LastResponse,
+		&i.ClaimedAt,
+		&i.CreatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const getAPIKeyByPrefix = `-- name: GetAPIKeyByPrefix :one
 SELECT id, tenant_id, prefix, hash, hash_algo, name, scopes, last_used_at, revoked_at, created_at FROM api_keys WHERE prefix = $1
 `
@@ -417,6 +554,30 @@ func (q *Queries) GetTenantByID(ctx context.Context, id int64) (Tenant, error) {
 	return i, err
 }
 
+const getWebhookEndpoint = `-- name: GetWebhookEndpoint :one
+SELECT id, tenant_id, url, secret, events, active, created_at FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2
+`
+
+type GetWebhookEndpointParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) GetWebhookEndpoint(ctx context.Context, arg GetWebhookEndpointParams) (WebhookEndpoint, error) {
+	row := q.db.QueryRow(ctx, getWebhookEndpoint, arg.ID, arg.TenantID)
+	var i WebhookEndpoint
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Url,
+		&i.Secret,
+		&i.Events,
+		&i.Active,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listAPIKeysByTenant = `-- name: ListAPIKeysByTenant :many
 SELECT id, tenant_id, prefix, hash, hash_algo, name, scopes, last_used_at, revoked_at, created_at FROM api_keys WHERE tenant_id = $1 ORDER BY id DESC
 `
@@ -452,6 +613,48 @@ func (q *Queries) ListAPIKeysByTenant(ctx context.Context, tenantID int64) ([]Ap
 	return items, nil
 }
 
+const listActiveEndpointsForEvent = `-- name: ListActiveEndpointsForEvent :many
+SELECT id, tenant_id, url, secret, events, active, created_at FROM webhook_endpoints
+WHERE tenant_id = $1
+  AND active
+  AND $2::text = ANY(events)
+`
+
+type ListActiveEndpointsForEventParams struct {
+	TenantID  int64
+	EventType string
+}
+
+// Returns all active endpoints for a tenant that have subscribed to the
+// given event type. Used by the DLR/MO fan-out path.
+func (q *Queries) ListActiveEndpointsForEvent(ctx context.Context, arg ListActiveEndpointsForEventParams) ([]WebhookEndpoint, error) {
+	rows, err := q.db.Query(ctx, listActiveEndpointsForEvent, arg.TenantID, arg.EventType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookEndpoint
+	for rows.Next() {
+		var i WebhookEndpoint
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Url,
+			&i.Secret,
+			&i.Events,
+			&i.Active,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAdminUsers = `-- name: ListAdminUsers :many
 SELECT id, email, password_hash, role, created_at FROM admin_users ORDER BY id
 `
@@ -471,6 +674,55 @@ func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
 			&i.PasswordHash,
 			&i.Role,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDeliveriesForEndpoint = `-- name: ListDeliveriesForEndpoint :many
+SELECT id, endpoint_id, tenant_id, event_id, event_type, payload, status, attempts, next_attempt_at, last_status, last_error, last_response, claimed_at, created_at, delivered_at FROM webhook_deliveries
+WHERE endpoint_id = $1 AND tenant_id = $2
+ORDER BY created_at DESC
+LIMIT $3
+`
+
+type ListDeliveriesForEndpointParams struct {
+	EndpointID int64
+	TenantID   int64
+	Limit      int32
+}
+
+func (q *Queries) ListDeliveriesForEndpoint(ctx context.Context, arg ListDeliveriesForEndpointParams) ([]WebhookDelivery, error) {
+	rows, err := q.db.Query(ctx, listDeliveriesForEndpoint, arg.EndpointID, arg.TenantID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookDelivery
+	for rows.Next() {
+		var i WebhookDelivery
+		if err := rows.Scan(
+			&i.ID,
+			&i.EndpointID,
+			&i.TenantID,
+			&i.EventID,
+			&i.EventType,
+			&i.Payload,
+			&i.Status,
+			&i.Attempts,
+			&i.NextAttemptAt,
+			&i.LastStatus,
+			&i.LastError,
+			&i.LastResponse,
+			&i.ClaimedAt,
+			&i.CreatedAt,
+			&i.DeliveredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -565,6 +817,93 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 	return items, nil
 }
 
+const listWebhookEndpointsByTenant = `-- name: ListWebhookEndpointsByTenant :many
+SELECT id, tenant_id, url, secret, events, active, created_at FROM webhook_endpoints WHERE tenant_id = $1 ORDER BY id DESC
+`
+
+func (q *Queries) ListWebhookEndpointsByTenant(ctx context.Context, tenantID int64) ([]WebhookEndpoint, error) {
+	rows, err := q.db.Query(ctx, listWebhookEndpointsByTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []WebhookEndpoint
+	for rows.Next() {
+		var i WebhookEndpoint
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Url,
+			&i.Secret,
+			&i.Events,
+			&i.Active,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const markDeliveryFailed = `-- name: MarkDeliveryFailed :exec
+UPDATE webhook_deliveries
+SET status = $2,
+    next_attempt_at = $3,
+    last_status = $4,
+    last_error = $5,
+    last_response = $6,
+    claimed_at = NULL
+WHERE id = $1
+`
+
+type MarkDeliveryFailedParams struct {
+	ID            int64
+	Status        string
+	NextAttemptAt pgtype.Timestamptz
+	LastStatus    *int32
+	LastError     *string
+	LastResponse  *string
+}
+
+// Used for both "retry later" (status=failed) and terminal "dead".
+func (q *Queries) MarkDeliveryFailed(ctx context.Context, arg MarkDeliveryFailedParams) error {
+	_, err := q.db.Exec(ctx, markDeliveryFailed,
+		arg.ID,
+		arg.Status,
+		arg.NextAttemptAt,
+		arg.LastStatus,
+		arg.LastError,
+		arg.LastResponse,
+	)
+	return err
+}
+
+const markDeliverySuccess = `-- name: MarkDeliverySuccess :exec
+UPDATE webhook_deliveries
+SET status = 'success',
+    delivered_at = now(),
+    last_status = $2,
+    last_error = NULL,
+    last_response = $3,
+    claimed_at = NULL
+WHERE id = $1
+`
+
+type MarkDeliverySuccessParams struct {
+	ID           int64
+	LastStatus   *int32
+	LastResponse *string
+}
+
+func (q *Queries) MarkDeliverySuccess(ctx context.Context, arg MarkDeliverySuccessParams) error {
+	_, err := q.db.Exec(ctx, markDeliverySuccess, arg.ID, arg.LastStatus, arg.LastResponse)
+	return err
+}
+
 const markMessageRejected = `-- name: MarkMessageRejected :exec
 UPDATE messages
 SET status = 'rejected',
@@ -616,6 +955,19 @@ func (q *Queries) RecoverStaleSending(ctx context.Context, claimedAt pgtype.Time
 	return err
 }
 
+const recoverStaleWebhookDeliveries = `-- name: RecoverStaleWebhookDeliveries :exec
+UPDATE webhook_deliveries
+SET status = 'pending', claimed_at = NULL
+WHERE status = 'in_flight' AND claimed_at < $1
+`
+
+// Reset rows stuck in_flight beyond the cutoff so a crashed worker doesn't
+// pin them forever.
+func (q *Queries) RecoverStaleWebhookDeliveries(ctx context.Context, claimedAt pgtype.Timestamptz) error {
+	_, err := q.db.Exec(ctx, recoverStaleWebhookDeliveries, claimedAt)
+	return err
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :exec
 UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
@@ -636,6 +988,21 @@ type SetTenantStatusParams struct {
 
 func (q *Queries) SetTenantStatus(ctx context.Context, arg SetTenantStatusParams) error {
 	_, err := q.db.Exec(ctx, setTenantStatus, arg.ID, arg.Status)
+	return err
+}
+
+const setWebhookEndpointActive = `-- name: SetWebhookEndpointActive :exec
+UPDATE webhook_endpoints SET active = $3 WHERE id = $1 AND tenant_id = $2
+`
+
+type SetWebhookEndpointActiveParams struct {
+	ID       int64
+	TenantID int64
+	Active   bool
+}
+
+func (q *Queries) SetWebhookEndpointActive(ctx context.Context, arg SetWebhookEndpointActiveParams) error {
+	_, err := q.db.Exec(ctx, setWebhookEndpointActive, arg.ID, arg.TenantID, arg.Active)
 	return err
 }
 

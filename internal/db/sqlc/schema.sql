@@ -66,3 +66,36 @@ CREATE INDEX idx_messages_queue ON messages(next_attempt_at) WHERE status = 'que
 CREATE INDEX idx_messages_sending ON messages(claimed_at) WHERE status = 'sending';
 CREATE INDEX idx_messages_tenant_created ON messages(tenant_id, created_at DESC);
 CREATE INDEX idx_messages_horisen ON messages(horisen_msg_id) WHERE horisen_msg_id IS NOT NULL;
+
+CREATE TABLE webhook_endpoints (
+    id          BIGSERIAL PRIMARY KEY,
+    tenant_id   BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    url         TEXT NOT NULL,
+    secret      TEXT NOT NULL,
+    events      TEXT[] NOT NULL,
+    active      BOOLEAN NOT NULL DEFAULT true,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_webhook_endpoints_tenant_active ON webhook_endpoints(tenant_id) WHERE active;
+
+CREATE TABLE webhook_deliveries (
+    id              BIGSERIAL PRIMARY KEY,
+    endpoint_id     BIGINT NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
+    tenant_id       BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    event_id        UUID NOT NULL,
+    event_type      TEXT NOT NULL,
+    payload         JSONB NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    attempts        INT NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_status     INT,
+    last_error      TEXT,
+    last_response   TEXT,
+    claimed_at      TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    delivered_at    TIMESTAMPTZ
+);
+CREATE INDEX idx_wd_pickup ON webhook_deliveries(next_attempt_at)
+    WHERE status IN ('pending','failed');
+CREATE INDEX idx_wd_in_flight ON webhook_deliveries(claimed_at) WHERE status = 'in_flight';
+CREATE INDEX idx_wd_tenant_created ON webhook_deliveries(tenant_id, created_at DESC);

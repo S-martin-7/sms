@@ -69,3 +69,31 @@ type Tenant struct {
 	CreatedAt     pgtype.Timestamptz
 	UpdatedAt     pgtype.Timestamptz
 }
+
+type WebhookDelivery struct {
+	ID            int64
+	EndpointID    int64
+	TenantID      int64
+	EventID       pgtype.UUID
+	EventType     string
+	Payload       []byte
+	Status        string
+	Attempts      int32
+	NextAttemptAt pgtype.Timestamptz
+	LastStatus    *int32
+	LastError     *string
+	LastResponse  *string
+	ClaimedAt     pgtype.Timestamptz
+	CreatedAt     pgtype.Timestamptz
+	DeliveredAt   pgtype.Timestamptz
+}
+
+type WebhookEndpoint struct {
+	ID        int64
+	TenantID  int64
+	Url       string
+	Secret    string
+	Events    []string
+	Active    bool
+	CreatedAt pgtype.Timestamptz
+}

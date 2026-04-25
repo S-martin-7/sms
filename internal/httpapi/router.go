@@ -9,6 +9,7 @@ import (
 	"github.com/S-martin-7/sms/internal/httpx"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/tenancy"
+	"github.com/S-martin-7/sms/internal/webhooks"
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
 )
@@ -17,6 +18,7 @@ type RouterDeps struct {
 	AdminSvc              *admin.Service
 	TenancySvc            *tenancy.Service
 	SMSSvc                *sms.Service
+	WebhooksSvc           *webhooks.Service
 	JWTSecret             []byte
 	JWTTTL                time.Duration
 	APIKeyPepper          string
@@ -38,6 +40,10 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/v1/ping", PingHandler())
 		r.Post("/v1/sms", SendSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
+		r.Post("/v1/webhooks", CreateWebhookHandler(d.WebhooksSvc))
+		r.Get("/v1/webhooks", ListWebhooksHandler(d.WebhooksSvc))
+		r.Get("/v1/webhooks/{id}", GetWebhookHandler(d.WebhooksSvc))
+		r.Delete("/v1/webhooks/{id}", DeleteWebhookHandler(d.WebhooksSvc))
 	})
 
 	// Horisen callback endpoints — accept EITHER HTTP Basic Auth (panel option
@@ -49,7 +55,7 @@ func NewRouter(d RouterDeps) http.Handler {
 			BasicPass:   d.HorisenCallbackPass,
 			QuerySecret: d.HorisenCallbackSecret,
 		}))
-		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.Logger))
+		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.WebhooksSvc, d.Logger))
 		r.Post("/v1/horisen/mo", MOStubHandler(d.Logger))
 	})
 

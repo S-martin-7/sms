@@ -135,3 +135,90 @@ SELECT id, tenant_id, status FROM messages
 WHERE horisen_msg_id = $1
 ORDER BY created_at DESC
 LIMIT 1;
+
+-- ===== webhook_endpoints =====
+
+-- name: CreateWebhookEndpoint :one
+INSERT INTO webhook_endpoints (tenant_id, url, secret, events, active)
+VALUES ($1, $2, $3, $4, true)
+RETURNING *;
+
+-- name: GetWebhookEndpoint :one
+SELECT * FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2;
+
+-- name: ListWebhookEndpointsByTenant :many
+SELECT * FROM webhook_endpoints WHERE tenant_id = $1 ORDER BY id DESC;
+
+-- name: ListActiveEndpointsForEvent :many
+-- Returns all active endpoints for a tenant that have subscribed to the
+-- given event type. Used by the DLR/MO fan-out path.
+SELECT * FROM webhook_endpoints
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND active
+  AND sqlc.arg(event_type)::text = ANY(events);
+
+-- name: SetWebhookEndpointActive :exec
+UPDATE webhook_endpoints SET active = $3 WHERE id = $1 AND tenant_id = $2;
+
+-- name: DeleteWebhookEndpoint :exec
+DELETE FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2;
+
+-- ===== webhook_deliveries =====
+
+-- name: EnqueueWebhookDelivery :one
+INSERT INTO webhook_deliveries (
+    endpoint_id, tenant_id, event_id, event_type, payload, status, next_attempt_at
+) VALUES (
+    $1, $2, $3, $4, $5, 'pending', now()
+)
+RETURNING *;
+
+-- name: ClaimPendingDelivery :one
+-- Atomically pick one ready delivery and mark it in_flight so other workers
+-- skip it. attempts is bumped here so even crashes leave a trail.
+UPDATE webhook_deliveries
+SET status = 'in_flight',
+    claimed_at = now(),
+    attempts = attempts + 1
+WHERE id = (
+    SELECT id FROM webhook_deliveries
+    WHERE status IN ('pending','failed') AND next_attempt_at <= now()
+    ORDER BY next_attempt_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING *;
+
+-- name: MarkDeliverySuccess :exec
+UPDATE webhook_deliveries
+SET status = 'success',
+    delivered_at = now(),
+    last_status = $2,
+    last_error = NULL,
+    last_response = $3,
+    claimed_at = NULL
+WHERE id = $1;
+
+-- name: MarkDeliveryFailed :exec
+-- Used for both "retry later" (status=failed) and terminal "dead".
+UPDATE webhook_deliveries
+SET status = $2,
+    next_attempt_at = $3,
+    last_status = $4,
+    last_error = $5,
+    last_response = $6,
+    claimed_at = NULL
+WHERE id = $1;
+
+-- name: RecoverStaleWebhookDeliveries :exec
+-- Reset rows stuck in_flight beyond the cutoff so a crashed worker doesn't
+-- pin them forever.
+UPDATE webhook_deliveries
+SET status = 'pending', claimed_at = NULL
+WHERE status = 'in_flight' AND claimed_at < $1;
+
+-- name: ListDeliveriesForEndpoint :many
+SELECT * FROM webhook_deliveries
+WHERE endpoint_id = $1 AND tenant_id = $2
+ORDER BY created_at DESC
+LIMIT $3;

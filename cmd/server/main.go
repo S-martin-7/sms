@@ -17,6 +17,7 @@ import (
 	"github.com/S-martin-7/sms/internal/logger"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/tenancy"
+	"github.com/S-martin-7/sms/internal/webhooks"
 )
 
 func main() {
@@ -38,6 +39,16 @@ func main() {
 	tenancySvc := tenancy.NewService(pool)
 	adminSvc := admin.NewService(pool, cfg.BcryptCost)
 	smsSvc := sms.NewService(pool)
+	whSvc := webhooks.NewService(pool)
+
+	// Webhook dispatcher polls webhook_deliveries and POSTs to tenant URLs.
+	whDispatcher := webhooks.NewDispatcher(webhooks.DispatcherConfig{
+		Pool:    pool,
+		Workers: 4,
+		Logger:  log,
+	})
+	go whDispatcher.Start(ctx)
+	log.Info().Msg("webhook dispatcher enabled")
 
 	// Start the Horisen outbox worker (only if creds are configured).
 	if cfg.HorisenBaseURL != "" && cfg.HorisenUsername != "" && cfg.HorisenPassword != "" {
@@ -72,6 +83,7 @@ func main() {
 		AdminSvc:              adminSvc,
 		TenancySvc:            tenancySvc,
 		SMSSvc:                smsSvc,
+		WebhooksSvc:           whSvc,
 		JWTSecret:             []byte(cfg.JWTSecret),
 		JWTTTL:                time.Duration(cfg.JWTTTLHours) * time.Hour,
 		APIKeyPepper:          cfg.APIKeyPepper,

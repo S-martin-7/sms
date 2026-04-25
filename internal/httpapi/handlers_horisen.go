@@ -5,9 +5,11 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/S-martin-7/sms/internal/httpx"
 	"github.com/S-martin-7/sms/internal/sms"
+	"github.com/S-martin-7/sms/internal/webhooks"
 	"github.com/rs/zerolog"
 )
 
@@ -15,10 +17,11 @@ import (
 // are tiny JSON; anything larger is almost certainly an attack.
 const horisenCallbackBodyLimit = 64 * 1024 // 64 KiB
 
-// DLRHandler parses a Horisen DLR callback and applies the status update.
-// Always returns 200 once the body is read — Horisen does not retry on 4xx,
-// so dropping a malformed DLR is preferable to losing all subsequent ones.
-func DLRHandler(svc *sms.Service, log *zerolog.Logger) http.HandlerFunc {
+// DLRHandler parses a Horisen DLR callback, applies the status update, and
+// fans the event out to subscribed webhook endpoints. Always returns 200
+// once the body is read — Horisen does not retry on 4xx, so dropping a
+// malformed DLR is preferable to losing all subsequent ones.
+func DLRHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, ok := readCallbackBody(w, r, log, "dlr")
 		if !ok {
@@ -48,7 +51,6 @@ func DLRHandler(svc *sms.Service, log *zerolog.Logger) http.HandlerFunc {
 				return
 			}
 			log.Error().Err(err).Str("kind", "dlr").Msg("dlr apply failed")
-			// Still 200 — see comment above.
 			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "error"})
 			return
 		}
@@ -60,12 +62,99 @@ func DLRHandler(svc *sms.Service, log *zerolog.Logger) http.HandlerFunc {
 			Int64("tenant_id", res.TenantID)
 		if res.Skipped {
 			evt.Str("skip_reason", res.SkipReason).Msg("dlr skipped")
-		} else {
-			evt.Str("new_status", res.NewStatus).Msg("dlr applied")
+			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		evt.Str("new_status", res.NewStatus).Msg("dlr applied")
+
+		// Fan out to webhook subscribers. Failures here are non-fatal for
+		// the DLR ack — the row is already updated.
+		if whSvc != nil {
+			eventType := webhookEventForStatus(res.NewStatus)
+			if eventType != "" {
+				payload := webhookSMSEvent{
+					Type:        eventType,
+					MessageID:   res.MsgID.String(),
+					TenantID:    res.TenantID,
+					Status:      res.NewStatus,
+					HorisenMsgID: dlr.HorisenMsgID,
+					ErrorCode:   parseErrorCode(dlr.ErrorCode),
+					ErrorMessage: dlrErrorMessage(dlr.ErrorMessage),
+					NumParts:    dlr.NumParts,
+					PartNum:     dlr.PartNum,
+					Timestamp:   time.Now().UTC(),
+				}
+				count, ferr := whSvc.FanOut(r.Context(), res.TenantID, eventType, payload)
+				if ferr != nil {
+					log.Warn().Err(ferr).Str("event_type", eventType).Msg("webhook fanout failed")
+				} else if count > 0 {
+					log.Info().
+						Str("event_type", eventType).
+						Int("deliveries", count).
+						Str("msg_id", res.MsgID.String()).
+						Msg("webhook fanout enqueued")
+				}
+			}
 		}
 
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+}
+
+// webhookSMSEvent is the payload shape tenants receive on their endpoints.
+// Stable: changing field names breaks downstream consumers.
+type webhookSMSEvent struct {
+	Type         string    `json:"type"`
+	MessageID    string    `json:"message_id"`
+	TenantID     int64     `json:"tenant_id"`
+	Status       string    `json:"status"`
+	HorisenMsgID string    `json:"horisen_msg_id,omitempty"`
+	ErrorCode    string    `json:"error_code,omitempty"`
+	ErrorMessage string    `json:"error_message,omitempty"`
+	NumParts     int       `json:"num_parts,omitempty"`
+	PartNum      int       `json:"part_num,omitempty"`
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+func webhookEventForStatus(status string) string {
+	switch status {
+	case "delivered":
+		return webhooks.EventSMSDelivered
+	case "undelivered":
+		return webhooks.EventSMSUndelivered
+	case "rejected":
+		return webhooks.EventSMSRejected
+	default:
+		return ""
+	}
+}
+
+func parseErrorCode(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		if s == "0" {
+			return ""
+		}
+		return s
+	}
+	var n json.Number
+	if json.Unmarshal(raw, &n) == nil {
+		if n == "0" {
+			return ""
+		}
+		return n.String()
+	}
+	return ""
+}
+
+func dlrErrorMessage(s string) string {
+	if s == "No error" {
+		return ""
+	}
+	return s
 }
 
 // MOStubHandler accepts Horisen MO (inbound SMS) callbacks, logs, and returns 200.
