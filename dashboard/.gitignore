@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.vite/
+*.local
+# tsc -b emits .d.ts and .js for vite.config.ts via the project reference;
+# we don't want the compiled outputs tracked.
+vite.config.d.ts
+vite.config.js
+*.tsbuildinfo

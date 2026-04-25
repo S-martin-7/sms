@@ -1,0 +1,180 @@
+import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api, errorMessage } from '@/api/client'
+import type { Message } from '@/api/types'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Input } from '@/components/ui/Input'
+import { Modal } from '@/components/ui/Modal'
+import { Spinner } from '@/components/ui/Spinner'
+import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/Table'
+import { formatDate, truncate } from '@/lib/format'
+
+interface Filters {
+  tenant_id: string
+  status: string
+  recipient: string
+  client_ref: string
+}
+
+interface MessagesResp {
+  messages: Message[]
+  next_cursor: string | null
+}
+
+const statuses = ['queued', 'sending', 'sent', 'delivered', 'undelivered', 'rejected', 'failed']
+
+export function MessagesPage() {
+  const [filters, setFilters] = useState<Filters>({
+    tenant_id: '',
+    status: '',
+    recipient: '',
+    client_ref: '',
+  })
+  // Pages accumulate so the user can scroll back; cursor is the next-page handle.
+  const [pages, setPages] = useState<Message[][]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [hasMore, setHasMore] = useState(false)
+  const [opened, setOpened] = useState<Message | null>(null)
+
+  const buildURL = (c: string | null) => {
+    const sp = new URLSearchParams()
+    if (filters.tenant_id) sp.set('tenant_id', filters.tenant_id)
+    if (filters.status) sp.set('status', filters.status)
+    if (filters.recipient) sp.set('recipient', filters.recipient)
+    if (filters.client_ref) sp.set('client_ref', filters.client_ref)
+    sp.set('limit', '25')
+    if (c) sp.set('cursor', c)
+    return `/admin/messages?${sp.toString()}`
+  }
+
+  const list = useQuery({
+    queryKey: ['admin', 'messages', filters],
+    queryFn: async () => {
+      const { data } = await api.get<MessagesResp>(buildURL(null))
+      setPages([data.messages])
+      setCursor(data.next_cursor)
+      setHasMore(!!data.next_cursor)
+      return data
+    },
+  })
+
+  const loadMore = async () => {
+    if (!cursor) return
+    const { data } = await api.get<MessagesResp>(buildURL(cursor))
+    setPages((prev) => [...prev, data.messages])
+    setCursor(data.next_cursor)
+    setHasMore(!!data.next_cursor)
+  }
+
+  const all = pages.flat()
+
+  return (
+    <div className="space-y-4">
+      <Card>
+        <CardHeader>
+          <h1 className="text-base font-semibold">Messages</h1>
+        </CardHeader>
+        <CardBody>
+          <div className="grid gap-3 sm:grid-cols-4">
+            <Input
+              label="Tenant ID"
+              type="number"
+              min={1}
+              value={filters.tenant_id}
+              onChange={(e) => setFilters({ ...filters, tenant_id: e.target.value })}
+            />
+            <div className="flex flex-col gap-1">
+              <label className="text-sm font-medium text-slate-700">Status</label>
+              <select
+                className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-900/20"
+                value={filters.status}
+                onChange={(e) => setFilters({ ...filters, status: e.target.value })}
+              >
+                <option value="">— any —</option>
+                {statuses.map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </div>
+            <Input
+              label="Recipient"
+              value={filters.recipient}
+              onChange={(e) => setFilters({ ...filters, recipient: e.target.value })}
+              placeholder="569..."
+            />
+            <Input
+              label="Client ref"
+              value={filters.client_ref}
+              onChange={(e) => setFilters({ ...filters, client_ref: e.target.value })}
+            />
+          </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardBody className="p-0">
+          {list.isLoading ? (
+            <div className="flex justify-center p-10">
+              <Spinner />
+            </div>
+          ) : list.error ? (
+            <div className="px-4 py-6 text-sm text-red-600">{errorMessage(list.error)}</div>
+          ) : (
+            <>
+              <Table>
+                <THead>
+                  <TR>
+                    <TH>ID</TH>
+                    <TH>Tenant</TH>
+                    <TH>From → To</TH>
+                    <TH>Status</TH>
+                    <TH>Created</TH>
+                    <TH>Final</TH>
+                  </TR>
+                </THead>
+                <TBody>
+                  {all.map((m) => (
+                    <TR key={m.id} onClick={() => setOpened(m)}>
+                      <TD className="font-mono text-xs text-slate-500">{truncate(m.id, 8)}</TD>
+                      <TD className="font-mono text-xs">{m.tenant_id}</TD>
+                      <TD className="text-xs">
+                        <span className="text-slate-500">{m.sender}</span>
+                        <span className="px-1 text-slate-300">→</span>
+                        <span className="font-mono">{m.to}</span>
+                      </TD>
+                      <TD>
+                        <Badge value={m.status} />
+                      </TD>
+                      <TD className="text-slate-500">{formatDate(m.created_at)}</TD>
+                      <TD className="text-slate-500">{formatDate(m.final_at)}</TD>
+                    </TR>
+                  ))}
+                </TBody>
+              </Table>
+              {!all.length && (
+                <div className="px-4 py-10 text-center text-sm text-slate-500">No messages match.</div>
+              )}
+              {hasMore && (
+                <div className="flex justify-center border-t border-slate-100 p-3">
+                  <Button variant="secondary" onClick={loadMore}>
+                    Load more
+                  </Button>
+                </div>
+              )}
+            </>
+          )}
+        </CardBody>
+      </Card>
+
+      {opened && (
+        <Modal open onClose={() => setOpened(null)} title={`Message ${opened.id}`} width="lg">
+          <pre className="overflow-x-auto rounded-md bg-slate-900 p-3 text-xs text-slate-100">
+            {JSON.stringify(opened, null, 2)}
+          </pre>
+        </Modal>
+      )}
+    </div>
+  )
+}
