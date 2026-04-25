@@ -6,6 +6,7 @@ import (
 
 	"github.com/S-martin-7/sms/internal/admin"
 	"github.com/S-martin-7/sms/internal/auth/middleware"
+	"github.com/S-martin-7/sms/internal/events"
 	"github.com/S-martin-7/sms/internal/httpx"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/tenancy"
@@ -19,6 +20,7 @@ type RouterDeps struct {
 	TenancySvc            *tenancy.Service
 	SMSSvc                *sms.Service
 	WebhooksSvc           *webhooks.Service
+	EventsSvc             *events.Service
 	JWTSecret             []byte
 	JWTTTL                time.Duration
 	APIKeyPepper          string
@@ -39,7 +41,9 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Use(middleware.APIKey(d.TenancySvc, d.APIKeyPepper))
 		r.Get("/v1/ping", PingHandler())
 		r.Post("/v1/sms", SendSMSHandler(d.SMSSvc))
+		r.Get("/v1/sms", ListSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
+		r.Get("/v1/events", ListEventsHandler(d.EventsSvc))
 		r.Post("/v1/webhooks", CreateWebhookHandler(d.WebhooksSvc))
 		r.Get("/v1/webhooks", ListWebhooksHandler(d.WebhooksSvc))
 		r.Get("/v1/webhooks/{id}", GetWebhookHandler(d.WebhooksSvc))
@@ -55,8 +59,8 @@ func NewRouter(d RouterDeps) http.Handler {
 			BasicPass:   d.HorisenCallbackPass,
 			QuerySecret: d.HorisenCallbackSecret,
 		}))
-		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.WebhooksSvc, d.Logger))
-		r.Post("/v1/horisen/mo", MOHandler(d.SMSSvc, d.WebhooksSvc, d.Logger))
+		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.WebhooksSvc, d.EventsSvc, d.Logger))
+		r.Post("/v1/horisen/mo", MOHandler(d.SMSSvc, d.WebhooksSvc, d.EventsSvc, d.Logger))
 	})
 
 	return r

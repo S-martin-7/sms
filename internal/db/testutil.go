@@ -52,7 +52,7 @@ func WithTestDB(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 	})
 
-	_, err = pool.Exec(ctx, `TRUNCATE inbound_messages, inbound_numbers, webhook_deliveries, webhook_endpoints, messages, audit_log, admin_users, api_keys, tenants RESTART IDENTITY CASCADE`)
+	_, err = pool.Exec(ctx, `TRUNCATE events, inbound_messages, inbound_numbers, webhook_deliveries, webhook_endpoints, messages, audit_log, admin_users, api_keys, tenants RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}

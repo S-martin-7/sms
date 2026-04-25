@@ -99,6 +99,72 @@ func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (*Message, error
 	return fromRow(row), nil
 }
 
+// ListOpts are the filters for ListMessages. Empty fields are no-ops.
+type ListOpts struct {
+	Status          string    // exact match (queued, sent, delivered, ...)
+	Recipient       string    // exact match (E.164 without '+')
+	ClientRef       string    // exact match (tenant idempotency key)
+	From            time.Time // inclusive lower bound on created_at; zero = no bound
+	To              time.Time // exclusive upper bound on created_at; zero = no bound
+	CursorCreatedAt time.Time // zero = from newest
+	CursorID        uuid.UUID // pair with CursorCreatedAt for tuple comparison
+	Limit           int       // capped to MaxListLimit; 0 → DefaultListLimit
+}
+
+const (
+	DefaultListLimit = 50
+	MaxListLimit     = 200
+)
+
+// ListMessages returns messages newest-first for the tenant, applying the
+// given filters. Use the last item's (CreatedAt, ID) as the next cursor
+// when len(result) == Limit.
+func (s *Service) ListMessages(ctx context.Context, tenantID int64, opts ListOpts) ([]*Message, error) {
+	if opts.Limit <= 0 {
+		opts.Limit = DefaultListLimit
+	}
+	if opts.Limit > MaxListLimit {
+		opts.Limit = MaxListLimit
+	}
+
+	params := sqlcgen.ListMessagesFilteredParams{
+		TenantID: tenantID,
+		Lim:      int32(opts.Limit),
+	}
+	if !opts.CursorCreatedAt.IsZero() {
+		params.CursorCreatedAt = pgtype.Timestamptz{Time: opts.CursorCreatedAt, Valid: true}
+		params.CursorID = pgtype.UUID{Bytes: opts.CursorID, Valid: true}
+	}
+	if opts.Status != "" {
+		v := opts.Status
+		params.Status = &v
+	}
+	if opts.Recipient != "" {
+		v := opts.Recipient
+		params.Recipient = &v
+	}
+	if opts.ClientRef != "" {
+		v := opts.ClientRef
+		params.ClientRef = &v
+	}
+	if !opts.From.IsZero() {
+		params.FromTime = pgtype.Timestamptz{Time: opts.From, Valid: true}
+	}
+	if !opts.To.IsZero() {
+		params.ToTime = pgtype.Timestamptz{Time: opts.To, Valid: true}
+	}
+
+	rows, err := s.q.ListMessagesFiltered(ctx, params)
+	if err != nil {
+		return nil, fmt.Errorf("list messages: %w", err)
+	}
+	out := make([]*Message, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, fromRow(r))
+	}
+	return out, nil
+}
+
 // GetForTenant returns the message scoped to the calling tenant.
 // ErrNotFound if id doesn't exist OR belongs to another tenant.
 func (s *Service) GetForTenant(ctx context.Context, id uuid.UUID, tenantID int64) (*Message, error) {

@@ -259,6 +259,33 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 	return i, err
 }
 
+const createEvent = `-- name: CreateEvent :one
+
+INSERT INTO events (tenant_id, type, payload)
+VALUES ($1, $2, $3)
+RETURNING id, tenant_id, type, payload, created_at
+`
+
+type CreateEventParams struct {
+	TenantID int64
+	Type     string
+	Payload  []byte
+}
+
+// ===== events (polling feed) =====
+func (q *Queries) CreateEvent(ctx context.Context, arg CreateEventParams) (Event, error) {
+	row := q.db.QueryRow(ctx, createEvent, arg.TenantID, arg.Type, arg.Payload)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Type,
+		&i.Payload,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createInboundMessage = `-- name: CreateInboundMessage :one
 
 INSERT INTO inbound_messages (id, tenant_id, horisen_id, src, dst, text, dcs, received_at)
@@ -859,6 +886,60 @@ func (q *Queries) ListDeliveriesForEndpoint(ctx context.Context, arg ListDeliver
 	return items, nil
 }
 
+const listEventsByTenant = `-- name: ListEventsByTenant :many
+SELECT id, tenant_id, type, payload, created_at FROM events
+WHERE tenant_id = $1
+  AND ($2::bigint = 0 OR id < $2::bigint)
+  AND ($3::text[] IS NULL OR type = ANY($3::text[]))
+  AND ($4::timestamptz IS NULL OR created_at >= $4::timestamptz)
+  AND ($5::timestamptz   IS NULL OR created_at <  $5::timestamptz)
+ORDER BY id DESC
+LIMIT $6
+`
+
+type ListEventsByTenantParams struct {
+	TenantID int64
+	CursorID int64
+	Types    []string
+	FromTime pgtype.Timestamptz
+	ToTime   pgtype.Timestamptz
+	Lim      int32
+}
+
+// cursor_id = 0 means "from newest"; types NULL/empty array means no type filter.
+func (q *Queries) ListEventsByTenant(ctx context.Context, arg ListEventsByTenantParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, listEventsByTenant,
+		arg.TenantID,
+		arg.CursorID,
+		arg.Types,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Event
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Type,
+			&i.Payload,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInboundMessagesByTenant = `-- name: ListInboundMessagesByTenant :many
 SELECT id, tenant_id, horisen_id, src, dst, text, dcs, received_at, created_at FROM inbound_messages
 WHERE tenant_id = $1
@@ -973,6 +1054,83 @@ type ListMessagesByTenantParams struct {
 
 func (q *Queries) ListMessagesByTenant(ctx context.Context, arg ListMessagesByTenantParams) ([]Message, error) {
 	rows, err := q.db.Query(ctx, listMessagesByTenant, arg.TenantID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Message
+	for rows.Next() {
+		var i Message
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Sender,
+			&i.Recipient,
+			&i.Text,
+			&i.Dcs,
+			&i.NumParts,
+			&i.Status,
+			&i.HorisenMsgID,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.ClientRef,
+			&i.Attempts,
+			&i.ClaimedAt,
+			&i.NextAttemptAt,
+			&i.CreatedAt,
+			&i.SentAt,
+			&i.FinalAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMessagesFiltered = `-- name: ListMessagesFiltered :many
+SELECT id, tenant_id, sender, recipient, text, dcs, num_parts, status, horisen_msg_id, error_code, error_message, client_ref, attempts, claimed_at, next_attempt_at, created_at, sent_at, final_at FROM messages
+WHERE tenant_id = $1
+  AND ($2::timestamptz IS NULL
+       OR (created_at, id) < ($2::timestamptz, $3::uuid))
+  AND ($4::text     IS NULL OR status     = $4::text)
+  AND ($5::text  IS NULL OR recipient  = $5::text)
+  AND ($6::text IS NULL OR client_ref = $6::text)
+  AND ($7::timestamptz IS NULL OR created_at >= $7::timestamptz)
+  AND ($8::timestamptz   IS NULL OR created_at <  $8::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT $9
+`
+
+type ListMessagesFilteredParams struct {
+	TenantID        int64
+	CursorCreatedAt pgtype.Timestamptz
+	CursorID        pgtype.UUID
+	Status          *string
+	Recipient       *string
+	ClientRef       *string
+	FromTime        pgtype.Timestamptz
+	ToTime          pgtype.Timestamptz
+	Lim             int32
+}
+
+// Cursor is (created_at, id) tuple — id is UUID v4 so not monotonic on its own.
+// nullable cursor_created_at (and matching cursor_id) means "from newest".
+func (q *Queries) ListMessagesFiltered(ctx context.Context, arg ListMessagesFilteredParams) ([]Message, error) {
+	rows, err := q.db.Query(ctx, listMessagesFiltered,
+		arg.TenantID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.Status,
+		arg.Recipient,
+		arg.ClientRef,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Lim,
+	)
 	if err != nil {
 		return nil, err
 	}

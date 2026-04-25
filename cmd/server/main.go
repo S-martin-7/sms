@@ -12,6 +12,7 @@ import (
 	"github.com/S-martin-7/sms/internal/admin"
 	"github.com/S-martin-7/sms/internal/config"
 	"github.com/S-martin-7/sms/internal/db"
+	"github.com/S-martin-7/sms/internal/events"
 	"github.com/S-martin-7/sms/internal/horisen"
 	"github.com/S-martin-7/sms/internal/httpapi"
 	"github.com/S-martin-7/sms/internal/logger"
@@ -40,6 +41,7 @@ func main() {
 	adminSvc := admin.NewService(pool, cfg.BcryptCost)
 	smsSvc := sms.NewService(pool)
 	whSvc := webhooks.NewService(pool)
+	eventsSvc := events.NewService(pool)
 
 	// Webhook dispatcher polls webhook_deliveries and POSTs to tenant URLs.
 	whDispatcher := webhooks.NewDispatcher(webhooks.DispatcherConfig{
@@ -84,6 +86,7 @@ func main() {
 		TenancySvc:            tenancySvc,
 		SMSSvc:                smsSvc,
 		WebhooksSvc:           whSvc,
+		EventsSvc:             eventsSvc,
 		JWTSecret:             []byte(cfg.JWTSecret),
 		JWTTTL:                time.Duration(cfg.JWTTTLHours) * time.Hour,
 		APIKeyPepper:          cfg.APIKeyPepper,

@@ -39,6 +39,14 @@ type AuditLog struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Event struct {
+	ID        int64
+	TenantID  int64
+	Type      string
+	Payload   []byte
+	CreatedAt pgtype.Timestamptz
+}
+
 type InboundMessage struct {
 	ID         pgtype.UUID
 	TenantID   int64

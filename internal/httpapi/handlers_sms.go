@@ -3,7 +3,9 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -97,6 +99,99 @@ func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 			return
 		}
 		httpx.WriteJSON(w, http.StatusAccepted, toResp(msg))
+	}
+}
+
+// validSMSStatuses are the values we accept on `?status=` for /v1/sms.
+// Anything else returns 400 instead of silently returning [].
+var validSMSStatuses = map[string]struct{}{
+	"queued":      {},
+	"sending":     {},
+	"sent":        {},
+	"delivered":   {},
+	"undelivered": {},
+	"rejected":    {},
+	"failed":      {},
+}
+
+// ListSMSHandler — GET /v1/sms?status=&recipient=&client_ref=&from=&to=&cursor=&limit=
+func ListSMSHandler(svc *sms.Service) http.HandlerFunc {
+	type resp struct {
+		Messages   []messageResp `json:"messages"`
+		NextCursor *string       `json:"next_cursor"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := httpx.TenantIDFrom(r.Context())
+		q := r.URL.Query()
+
+		opts := sms.ListOpts{
+			Status:    strings.TrimSpace(q.Get("status")),
+			Recipient: strings.TrimSpace(q.Get("recipient")),
+			ClientRef: strings.TrimSpace(q.Get("client_ref")),
+		}
+		if opts.Status != "" {
+			if _, ok := validSMSStatuses[opts.Status]; !ok {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid status")
+				return
+			}
+		}
+		if v := q.Get("from"); v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "from must be RFC3339")
+				return
+			}
+			opts.From = t
+		}
+		if v := q.Get("to"); v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "to must be RFC3339")
+				return
+			}
+			opts.To = t
+		}
+		if v := q.Get("limit"); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 1 || n > sms.MaxListLimit {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request",
+					fmt.Sprintf("limit must be 1-%d", sms.MaxListLimit))
+				return
+			}
+			opts.Limit = n
+		}
+		if v := q.Get("cursor"); v != "" {
+			ts, id, err := httpx.DecodeMsgCursor(v)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid cursor")
+				return
+			}
+			opts.CursorCreatedAt = ts
+			opts.CursorID = id
+		}
+
+		msgs, err := svc.ListMessages(r.Context(), tenantID, opts)
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal", "list failed")
+			return
+		}
+
+		out := resp{Messages: make([]messageResp, 0, len(msgs))}
+		for _, m := range msgs {
+			out.Messages = append(out.Messages, toResp(m))
+		}
+		// Emit a next_cursor only when the page is full — saves the client
+		// from making an extra empty request to discover end-of-list.
+		effectiveLimit := opts.Limit
+		if effectiveLimit == 0 {
+			effectiveLimit = sms.DefaultListLimit
+		}
+		if len(msgs) == effectiveLimit {
+			last := msgs[len(msgs)-1]
+			c := httpx.EncodeMsgCursor(last.CreatedAt, last.ID)
+			out.NextCursor = &c
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
 	}
 }
 

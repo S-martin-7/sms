@@ -260,3 +260,36 @@ SELECT * FROM inbound_messages
 WHERE tenant_id = $1
 ORDER BY received_at DESC
 LIMIT $2;
+
+-- ===== events (polling feed) =====
+
+-- name: CreateEvent :one
+INSERT INTO events (tenant_id, type, payload)
+VALUES ($1, $2, $3)
+RETURNING *;
+
+-- name: ListEventsByTenant :many
+-- cursor_id = 0 means "from newest"; types NULL/empty array means no type filter.
+SELECT * FROM events
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.arg(cursor_id)::bigint = 0 OR id < sqlc.arg(cursor_id)::bigint)
+  AND (sqlc.narg(types)::text[] IS NULL OR type = ANY(sqlc.narg(types)::text[]))
+  AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
+  AND (sqlc.narg(to_time)::timestamptz   IS NULL OR created_at <  sqlc.narg(to_time)::timestamptz)
+ORDER BY id DESC
+LIMIT sqlc.arg(lim);
+
+-- name: ListMessagesFiltered :many
+-- Cursor is (created_at, id) tuple — id is UUID v4 so not monotonic on its own.
+-- nullable cursor_created_at (and matching cursor_id) means "from newest".
+SELECT * FROM messages
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.narg(cursor_created_at)::timestamptz IS NULL
+       OR (created_at, id) < (sqlc.narg(cursor_created_at)::timestamptz, sqlc.narg(cursor_id)::uuid))
+  AND (sqlc.narg(status)::text     IS NULL OR status     = sqlc.narg(status)::text)
+  AND (sqlc.narg(recipient)::text  IS NULL OR recipient  = sqlc.narg(recipient)::text)
+  AND (sqlc.narg(client_ref)::text IS NULL OR client_ref = sqlc.narg(client_ref)::text)
+  AND (sqlc.narg(from_time)::timestamptz IS NULL OR created_at >= sqlc.narg(from_time)::timestamptz)
+  AND (sqlc.narg(to_time)::timestamptz   IS NULL OR created_at <  sqlc.narg(to_time)::timestamptz)
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg(lim);

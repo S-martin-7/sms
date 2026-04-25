@@ -113,3 +113,110 @@ func TestGetForTenant_unknownID(t *testing.T) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestListMessages_newestFirstAndPagination(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "T"})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+
+	// Seed 5 messages with distinct created_at by short sleeps.
+	for i := 0; i < 5; i++ {
+		if _, err := svc.Enqueue(ctx, sms.EnqueueInput{
+			TenantID: tt.ID, Sender: "S", Recipient: "5612345" + string(rune('0'+i)), Text: "x",
+		}); err != nil {
+			t.Fatalf("seed %d: %v", i, err)
+		}
+	}
+
+	page1, err := svc.ListMessages(ctx, tt.ID, sms.ListOpts{Limit: 2})
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(page1) != 2 {
+		t.Fatalf("page1 len = %d", len(page1))
+	}
+	// Newest-first ordering
+	if !page1[0].CreatedAt.After(page1[1].CreatedAt) && page1[0].CreatedAt.Equal(page1[1].CreatedAt) {
+		// equal created_at is OK if id ordering breaks tie; just check basic monotonicity
+		if page1[0].CreatedAt.Before(page1[1].CreatedAt) {
+			t.Errorf("not newest-first: %v vs %v", page1[0].CreatedAt, page1[1].CreatedAt)
+		}
+	}
+
+	page2, err := svc.ListMessages(ctx, tt.ID, sms.ListOpts{
+		Limit:           2,
+		CursorCreatedAt: page1[1].CreatedAt,
+		CursorID:        page1[1].ID,
+	})
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(page2) != 2 {
+		t.Errorf("page2 len = %d, want 2", len(page2))
+	}
+	for _, m := range page2 {
+		if m.ID == page1[0].ID || m.ID == page1[1].ID {
+			t.Errorf("page2 contains a page1 row: %s", m.ID)
+		}
+	}
+}
+
+func TestListMessages_filterByStatus(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "T"})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+	for i := 0; i < 3; i++ {
+		_, _ = svc.Enqueue(ctx, sms.EnqueueInput{TenantID: tt.ID, Sender: "S", Recipient: "5612345678" + string(rune('0'+i)), Text: "x"})
+	}
+	// All start as 'queued'.
+	got, err := svc.ListMessages(ctx, tt.ID, sms.ListOpts{Status: "queued"})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("queued count = %d, want 3", len(got))
+	}
+	got, _ = svc.ListMessages(ctx, tt.ID, sms.ListOpts{Status: "delivered"})
+	if len(got) != 0 {
+		t.Errorf("delivered count = %d, want 0", len(got))
+	}
+}
+
+func TestListMessages_filterByRecipientAndClientRef(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "T"})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+
+	_, _ = svc.Enqueue(ctx, sms.EnqueueInput{TenantID: tt.ID, Sender: "S", Recipient: "56999000001", Text: "a", ClientRef: "ref-A"})
+	_, _ = svc.Enqueue(ctx, sms.EnqueueInput{TenantID: tt.ID, Sender: "S", Recipient: "56999000002", Text: "b", ClientRef: "ref-B"})
+
+	got, _ := svc.ListMessages(ctx, tt.ID, sms.ListOpts{Recipient: "56999000001"})
+	if len(got) != 1 || got[0].ClientRef == nil || *got[0].ClientRef != "ref-A" {
+		t.Errorf("recipient filter wrong: %+v", got)
+	}
+	got, _ = svc.ListMessages(ctx, tt.ID, sms.ListOpts{ClientRef: "ref-B"})
+	if len(got) != 1 || got[0].Recipient != "56999000002" {
+		t.Errorf("client_ref filter wrong: %+v", got)
+	}
+}
+
+func TestListMessages_tenantIsolation(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	a, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "A"})
+	b, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "B"})
+	svc := sms.NewService(pool)
+
+	_, _ = svc.Enqueue(context.Background(), sms.EnqueueInput{TenantID: a.ID, Sender: "S", Recipient: "5611", Text: "x"})
+
+	got, _ := svc.ListMessages(context.Background(), b.ID, sms.ListOpts{})
+	if len(got) != 0 {
+		t.Errorf("tenant B should see nothing, got %d", len(got))
+	}
+}

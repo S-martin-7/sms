@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/S-martin-7/sms/internal/events"
 	"github.com/S-martin-7/sms/internal/httpx"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/webhooks"
@@ -17,11 +18,12 @@ import (
 // are tiny JSON; anything larger is almost certainly an attack.
 const horisenCallbackBodyLimit = 64 * 1024 // 64 KiB
 
-// DLRHandler parses a Horisen DLR callback, applies the status update, and
-// fans the event out to subscribed webhook endpoints. Always returns 200
-// once the body is read — Horisen does not retry on 4xx, so dropping a
-// malformed DLR is preferable to losing all subsequent ones.
-func DLRHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) http.HandlerFunc {
+// DLRHandler parses a Horisen DLR callback, applies the status update,
+// persists the event to the polling feed, and fans out a signed event to
+// subscribed webhook endpoints. Always returns 200 once the body is read —
+// Horisen does not retry on 4xx, so dropping a malformed DLR is preferable
+// to losing all subsequent ones.
+func DLRHandler(svc *sms.Service, whSvc *webhooks.Service, evSvc *events.Service, log *zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, ok := readCallbackBody(w, r, log, "dlr")
 		if !ok {
@@ -67,33 +69,44 @@ func DLRHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) 
 		}
 		evt.Str("new_status", res.NewStatus).Msg("dlr applied")
 
+		eventType := webhookEventForStatus(res.NewStatus)
+		if eventType == "" {
+			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+			return
+		}
+		payload := webhookSMSEvent{
+			Type:        eventType,
+			MessageID:   res.MsgID.String(),
+			TenantID:    res.TenantID,
+			Status:      res.NewStatus,
+			HorisenMsgID: dlr.HorisenMsgID,
+			ErrorCode:   parseErrorCode(dlr.ErrorCode),
+			ErrorMessage: dlrErrorMessage(dlr.ErrorMessage),
+			NumParts:    dlr.NumParts,
+			PartNum:     dlr.PartNum,
+			Timestamp:   time.Now().UTC(),
+		}
+
+		// Persist to polling feed first — even if no webhooks are
+		// subscribed (or fan-out fails) the tenant can backfill via API.
+		if evSvc != nil {
+			if _, err := evSvc.Create(r.Context(), res.TenantID, eventType, payload); err != nil {
+				log.Warn().Err(err).Str("event_type", eventType).Msg("event persist failed")
+			}
+		}
+
 		// Fan out to webhook subscribers. Failures here are non-fatal for
-		// the DLR ack — the row is already updated.
+		// the DLR ack — the row is already updated and the event recorded.
 		if whSvc != nil {
-			eventType := webhookEventForStatus(res.NewStatus)
-			if eventType != "" {
-				payload := webhookSMSEvent{
-					Type:        eventType,
-					MessageID:   res.MsgID.String(),
-					TenantID:    res.TenantID,
-					Status:      res.NewStatus,
-					HorisenMsgID: dlr.HorisenMsgID,
-					ErrorCode:   parseErrorCode(dlr.ErrorCode),
-					ErrorMessage: dlrErrorMessage(dlr.ErrorMessage),
-					NumParts:    dlr.NumParts,
-					PartNum:     dlr.PartNum,
-					Timestamp:   time.Now().UTC(),
-				}
-				count, ferr := whSvc.FanOut(r.Context(), res.TenantID, eventType, payload)
-				if ferr != nil {
-					log.Warn().Err(ferr).Str("event_type", eventType).Msg("webhook fanout failed")
-				} else if count > 0 {
-					log.Info().
-						Str("event_type", eventType).
-						Int("deliveries", count).
-						Str("msg_id", res.MsgID.String()).
-						Msg("webhook fanout enqueued")
-				}
+			count, ferr := whSvc.FanOut(r.Context(), res.TenantID, eventType, payload)
+			if ferr != nil {
+				log.Warn().Err(ferr).Str("event_type", eventType).Msg("webhook fanout failed")
+			} else if count > 0 {
+				log.Info().
+					Str("event_type", eventType).
+					Int("deliveries", count).
+					Str("msg_id", res.MsgID.String()).
+					Msg("webhook fanout enqueued")
 			}
 		}
 
@@ -158,12 +171,13 @@ func dlrErrorMessage(s string) string {
 }
 
 // MOHandler parses a Horisen MO callback, persists the inbound message
-// scoped to the tenant that owns the destination MSISDN, and fans out a
-// signed `sms.inbound` event to subscribed webhook endpoints.
+// scoped to the tenant that owns the destination MSISDN, records the event
+// to the polling feed, and fans out a signed `sms.inbound` event to
+// subscribed webhook endpoints.
 //
 // Always returns 200 once the body is read (Horisen does not retry on 4xx).
 // MOs to unknown destination numbers are logged and dropped.
-func MOHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) http.HandlerFunc {
+func MOHandler(svc *sms.Service, whSvc *webhooks.Service, evSvc *events.Service, log *zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, ok := readCallbackBody(w, r, log, "mo")
 		if !ok {
@@ -205,18 +219,26 @@ func MOHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) h
 			Str("dst", res.Inbound.Dst).
 			Msg("mo persisted")
 
+		payload := webhookMOEvent{
+			Type:       webhooks.EventSMSInbound,
+			MessageID:  res.Inbound.ID.String(),
+			TenantID:   res.Inbound.TenantID,
+			Src:        res.Inbound.Src,
+			Dst:        res.Inbound.Dst,
+			Text:       res.Inbound.Text,
+			DCS:        res.Inbound.DCS,
+			ReceivedAt: res.Inbound.ReceivedAt.UTC(),
+		}
+
+		// Persist to polling feed.
+		if evSvc != nil {
+			if _, err := evSvc.Create(r.Context(), res.Inbound.TenantID, webhooks.EventSMSInbound, payload); err != nil {
+				log.Warn().Err(err).Msg("mo event persist failed")
+			}
+		}
+
 		// Fan out webhook event.
 		if whSvc != nil {
-			payload := webhookMOEvent{
-				Type:       webhooks.EventSMSInbound,
-				MessageID:  res.Inbound.ID.String(),
-				TenantID:   res.Inbound.TenantID,
-				Src:        res.Inbound.Src,
-				Dst:        res.Inbound.Dst,
-				Text:       res.Inbound.Text,
-				DCS:        res.Inbound.DCS,
-				ReceivedAt: res.Inbound.ReceivedAt.UTC(),
-			}
 			count, ferr := whSvc.FanOut(r.Context(), res.Inbound.TenantID, webhooks.EventSMSInbound, payload)
 			if ferr != nil {
 				log.Warn().Err(ferr).Msg("mo webhook fanout failed")
