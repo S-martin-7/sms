@@ -25,6 +25,8 @@ type Config struct {
 	HorisenTPS             int
 	HorisenValiditySec     int
 	HorisenCallbackSecret  string
+	HorisenCallbackUser    string
+	HorisenCallbackPass    string
 	HorisenTLSServerName   string
 	PublicBaseURL          string
 }
@@ -48,6 +50,8 @@ func Load() (*Config, error) {
 	cfg.HorisenTPS = envInt("HORISEN_TPS", 10)
 	cfg.HorisenValiditySec = envInt("HORISEN_VALIDITY_SEC", 86400)
 	cfg.HorisenCallbackSecret = os.Getenv("HORISEN_CALLBACK_SECRET")
+	cfg.HorisenCallbackUser = os.Getenv("HORISEN_CALLBACK_USER")
+	cfg.HorisenCallbackPass = os.Getenv("HORISEN_CALLBACK_PASSWORD")
 	cfg.HorisenTLSServerName = os.Getenv("HORISEN_TLS_SERVER_NAME")
 	cfg.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
 

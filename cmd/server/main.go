@@ -69,12 +69,15 @@ func main() {
 	}
 
 	handler := httpapi.NewRouter(httpapi.RouterDeps{
-		AdminSvc:     adminSvc,
-		TenancySvc:   tenancySvc,
-		SMSSvc:       smsSvc,
-		JWTSecret:    []byte(cfg.JWTSecret),
-		JWTTTL:       time.Duration(cfg.JWTTTLHours) * time.Hour,
-		APIKeyPepper: cfg.APIKeyPepper,
+		AdminSvc:            adminSvc,
+		TenancySvc:          tenancySvc,
+		SMSSvc:              smsSvc,
+		JWTSecret:           []byte(cfg.JWTSecret),
+		JWTTTL:              time.Duration(cfg.JWTTTLHours) * time.Hour,
+		APIKeyPepper:        cfg.APIKeyPepper,
+		HorisenCallbackUser: cfg.HorisenCallbackUser,
+		HorisenCallbackPass: cfg.HorisenCallbackPass,
+		Logger:              &log,
 	})
 
 	srv := &http.Server{
