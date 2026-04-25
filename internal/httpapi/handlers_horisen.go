@@ -157,23 +157,91 @@ func dlrErrorMessage(s string) string {
 	return s
 }
 
-// MOStubHandler accepts Horisen MO (inbound SMS) callbacks, logs, and returns 200.
-// Will be replaced by a real handler once inbound_numbers routing exists.
-func MOStubHandler(log *zerolog.Logger) http.HandlerFunc {
+// MOHandler parses a Horisen MO callback, persists the inbound message
+// scoped to the tenant that owns the destination MSISDN, and fans out a
+// signed `sms.inbound` event to subscribed webhook endpoints.
+//
+// Always returns 200 once the body is read (Horisen does not retry on 4xx).
+// MOs to unknown destination numbers are logged and dropped.
+func MOHandler(svc *sms.Service, whSvc *webhooks.Service, log *zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, ok := readCallbackBody(w, r, log, "mo")
 		if !ok {
 			return
 		}
-		var parsed any
-		evt := log.Info().Str("kind", "mo").Int("size", len(body))
-		if json.Unmarshal(body, &parsed) == nil {
-			evt.Interface("payload", parsed).Msg("horisen callback received (stub)")
-		} else {
-			evt.Str("raw", truncate(string(body), 512)).Msg("horisen callback received (non-json, stub)")
+
+		mo, err := sms.ParseMO(body)
+		if err != nil {
+			log.Warn().Err(err).
+				Str("kind", "mo").
+				Str("raw", truncate(string(body), 512)).
+				Msg("mo parse failed")
+			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "parse_error"})
+			return
 		}
+
+		res, err := svc.ApplyMO(r.Context(), mo)
+		if err != nil {
+			log.Error().Err(err).Str("kind", "mo").Msg("mo apply failed")
+			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "error"})
+			return
+		}
+		if res.Skipped {
+			log.Warn().
+				Str("kind", "mo").
+				Str("dst", mo.Dest).
+				Str("src", mo.Source).
+				Str("reason", res.SkipReason).
+				Msg("mo dropped — no tenant route")
+			httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ignored", "reason": "no_route"})
+			return
+		}
+
+		log.Info().
+			Str("kind", "mo").
+			Str("inbound_id", res.Inbound.ID.String()).
+			Int64("tenant_id", res.Inbound.TenantID).
+			Str("src", res.Inbound.Src).
+			Str("dst", res.Inbound.Dst).
+			Msg("mo persisted")
+
+		// Fan out webhook event.
+		if whSvc != nil {
+			payload := webhookMOEvent{
+				Type:       webhooks.EventSMSInbound,
+				MessageID:  res.Inbound.ID.String(),
+				TenantID:   res.Inbound.TenantID,
+				Src:        res.Inbound.Src,
+				Dst:        res.Inbound.Dst,
+				Text:       res.Inbound.Text,
+				DCS:        res.Inbound.DCS,
+				ReceivedAt: res.Inbound.ReceivedAt.UTC(),
+			}
+			count, ferr := whSvc.FanOut(r.Context(), res.Inbound.TenantID, webhooks.EventSMSInbound, payload)
+			if ferr != nil {
+				log.Warn().Err(ferr).Msg("mo webhook fanout failed")
+			} else if count > 0 {
+				log.Info().
+					Int("deliveries", count).
+					Str("inbound_id", res.Inbound.ID.String()).
+					Msg("mo webhook fanout enqueued")
+			}
+		}
+
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
+}
+
+// webhookMOEvent is the payload shape tenants receive on `sms.inbound`.
+type webhookMOEvent struct {
+	Type       string    `json:"type"`
+	MessageID  string    `json:"message_id"`
+	TenantID   int64     `json:"tenant_id"`
+	Src        string    `json:"src"`
+	Dst        string    `json:"dst"`
+	Text       string    `json:"text"`
+	DCS        string    `json:"dcs,omitempty"`
+	ReceivedAt time.Time `json:"received_at"`
 }
 
 func readCallbackBody(w http.ResponseWriter, r *http.Request, log *zerolog.Logger, kind string) ([]byte, bool) {

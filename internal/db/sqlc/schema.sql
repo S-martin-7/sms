@@ -99,3 +99,24 @@ CREATE INDEX idx_wd_pickup ON webhook_deliveries(next_attempt_at)
     WHERE status IN ('pending','failed');
 CREATE INDEX idx_wd_in_flight ON webhook_deliveries(claimed_at) WHERE status = 'in_flight';
 CREATE INDEX idx_wd_tenant_created ON webhook_deliveries(tenant_id, created_at DESC);
+
+CREATE TABLE inbound_numbers (
+    msisdn      TEXT PRIMARY KEY,
+    tenant_id   BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    label       TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_inbound_numbers_tenant ON inbound_numbers(tenant_id);
+
+CREATE TABLE inbound_messages (
+    id          UUID PRIMARY KEY,
+    tenant_id   BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    horisen_id  TEXT UNIQUE,
+    src         TEXT NOT NULL,
+    dst         TEXT NOT NULL,
+    text        TEXT NOT NULL,
+    dcs         TEXT,
+    received_at TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_inbound_messages_tenant_received ON inbound_messages(tenant_id, received_at DESC);

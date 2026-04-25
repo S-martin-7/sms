@@ -25,6 +25,8 @@ func main() {
 		err = runTenant(rest)
 	case "key":
 		err = runKey(rest)
+	case "inbound":
+		err = runInbound(rest)
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -52,7 +54,10 @@ Commands:
   tenant activate --id N
   key issue --tenant-id N [--name "label"]
   key list --tenant-id N
-  key revoke --id N`)
+  key revoke --id N
+  inbound assign --msisdn 569... --tenant-id N [--label "..."]
+  inbound list
+  inbound unassign --msisdn 569...`)
 }
 
 func runMigrate(args []string) error {

@@ -56,7 +56,7 @@ func NewRouter(d RouterDeps) http.Handler {
 			QuerySecret: d.HorisenCallbackSecret,
 		}))
 		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.WebhooksSvc, d.Logger))
-		r.Post("/v1/horisen/mo", MOStubHandler(d.Logger))
+		r.Post("/v1/horisen/mo", MOHandler(d.SMSSvc, d.WebhooksSvc, d.Logger))
 	})
 
 	return r

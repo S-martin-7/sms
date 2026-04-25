@@ -222,3 +222,41 @@ SELECT * FROM webhook_deliveries
 WHERE endpoint_id = $1 AND tenant_id = $2
 ORDER BY created_at DESC
 LIMIT $3;
+
+-- ===== inbound_numbers =====
+
+-- name: CreateInboundNumber :one
+INSERT INTO inbound_numbers (msisdn, tenant_id, label)
+VALUES ($1, $2, $3)
+RETURNING *;
+
+-- name: GetInboundNumber :one
+SELECT * FROM inbound_numbers WHERE msisdn = $1;
+
+-- name: ListInboundNumbersByTenant :many
+SELECT * FROM inbound_numbers WHERE tenant_id = $1 ORDER BY msisdn;
+
+-- name: ListInboundNumbersAll :many
+SELECT * FROM inbound_numbers ORDER BY tenant_id, msisdn;
+
+-- name: DeleteInboundNumber :exec
+DELETE FROM inbound_numbers WHERE msisdn = $1;
+
+-- ===== inbound_messages =====
+
+-- name: CreateInboundMessage :one
+-- ON CONFLICT on horisen_id makes the insert idempotent: a duplicate MO
+-- callback returns the existing row instead of failing.
+INSERT INTO inbound_messages (id, tenant_id, horisen_id, src, dst, text, dcs, received_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (horisen_id) DO UPDATE SET horisen_id = EXCLUDED.horisen_id
+RETURNING *;
+
+-- name: GetInboundMessage :one
+SELECT * FROM inbound_messages WHERE id = $1 AND tenant_id = $2;
+
+-- name: ListInboundMessagesByTenant :many
+SELECT * FROM inbound_messages
+WHERE tenant_id = $1
+ORDER BY received_at DESC
+LIMIT $2;

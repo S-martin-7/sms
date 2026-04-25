@@ -259,6 +259,80 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 	return i, err
 }
 
+const createInboundMessage = `-- name: CreateInboundMessage :one
+
+INSERT INTO inbound_messages (id, tenant_id, horisen_id, src, dst, text, dcs, received_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+ON CONFLICT (horisen_id) DO UPDATE SET horisen_id = EXCLUDED.horisen_id
+RETURNING id, tenant_id, horisen_id, src, dst, text, dcs, received_at, created_at
+`
+
+type CreateInboundMessageParams struct {
+	ID         pgtype.UUID
+	TenantID   int64
+	HorisenID  *string
+	Src        string
+	Dst        string
+	Text       string
+	Dcs        *string
+	ReceivedAt pgtype.Timestamptz
+}
+
+// ===== inbound_messages =====
+// ON CONFLICT on horisen_id makes the insert idempotent: a duplicate MO
+// callback returns the existing row instead of failing.
+func (q *Queries) CreateInboundMessage(ctx context.Context, arg CreateInboundMessageParams) (InboundMessage, error) {
+	row := q.db.QueryRow(ctx, createInboundMessage,
+		arg.ID,
+		arg.TenantID,
+		arg.HorisenID,
+		arg.Src,
+		arg.Dst,
+		arg.Text,
+		arg.Dcs,
+		arg.ReceivedAt,
+	)
+	var i InboundMessage
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.HorisenID,
+		&i.Src,
+		&i.Dst,
+		&i.Text,
+		&i.Dcs,
+		&i.ReceivedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createInboundNumber = `-- name: CreateInboundNumber :one
+
+INSERT INTO inbound_numbers (msisdn, tenant_id, label)
+VALUES ($1, $2, $3)
+RETURNING msisdn, tenant_id, label, created_at
+`
+
+type CreateInboundNumberParams struct {
+	Msisdn   string
+	TenantID int64
+	Label    *string
+}
+
+// ===== inbound_numbers =====
+func (q *Queries) CreateInboundNumber(ctx context.Context, arg CreateInboundNumberParams) (InboundNumber, error) {
+	row := q.db.QueryRow(ctx, createInboundNumber, arg.Msisdn, arg.TenantID, arg.Label)
+	var i InboundNumber
+	err := row.Scan(
+		&i.Msisdn,
+		&i.TenantID,
+		&i.Label,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createMessage = `-- name: CreateMessage :one
 INSERT INTO messages (
     id, tenant_id, sender, recipient, text, dcs, num_parts, status, client_ref
@@ -376,6 +450,15 @@ func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEn
 	return i, err
 }
 
+const deleteInboundNumber = `-- name: DeleteInboundNumber :exec
+DELETE FROM inbound_numbers WHERE msisdn = $1
+`
+
+func (q *Queries) DeleteInboundNumber(ctx context.Context, msisdn string) error {
+	_, err := q.db.Exec(ctx, deleteInboundNumber, msisdn)
+	return err
+}
+
 const deleteWebhookEndpoint = `-- name: DeleteWebhookEndpoint :exec
 DELETE FROM webhook_endpoints WHERE id = $1 AND tenant_id = $2
 `
@@ -472,6 +555,48 @@ func (q *Queries) GetAdminUserByEmail(ctx context.Context, email string) (AdminU
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getInboundMessage = `-- name: GetInboundMessage :one
+SELECT id, tenant_id, horisen_id, src, dst, text, dcs, received_at, created_at FROM inbound_messages WHERE id = $1 AND tenant_id = $2
+`
+
+type GetInboundMessageParams struct {
+	ID       pgtype.UUID
+	TenantID int64
+}
+
+func (q *Queries) GetInboundMessage(ctx context.Context, arg GetInboundMessageParams) (InboundMessage, error) {
+	row := q.db.QueryRow(ctx, getInboundMessage, arg.ID, arg.TenantID)
+	var i InboundMessage
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.HorisenID,
+		&i.Src,
+		&i.Dst,
+		&i.Text,
+		&i.Dcs,
+		&i.ReceivedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getInboundNumber = `-- name: GetInboundNumber :one
+SELECT msisdn, tenant_id, label, created_at FROM inbound_numbers WHERE msisdn = $1
+`
+
+func (q *Queries) GetInboundNumber(ctx context.Context, msisdn string) (InboundNumber, error) {
+	row := q.db.QueryRow(ctx, getInboundNumber, msisdn)
+	var i InboundNumber
+	err := row.Scan(
+		&i.Msisdn,
+		&i.TenantID,
+		&i.Label,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -723,6 +848,106 @@ func (q *Queries) ListDeliveriesForEndpoint(ctx context.Context, arg ListDeliver
 			&i.ClaimedAt,
 			&i.CreatedAt,
 			&i.DeliveredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboundMessagesByTenant = `-- name: ListInboundMessagesByTenant :many
+SELECT id, tenant_id, horisen_id, src, dst, text, dcs, received_at, created_at FROM inbound_messages
+WHERE tenant_id = $1
+ORDER BY received_at DESC
+LIMIT $2
+`
+
+type ListInboundMessagesByTenantParams struct {
+	TenantID int64
+	Limit    int32
+}
+
+func (q *Queries) ListInboundMessagesByTenant(ctx context.Context, arg ListInboundMessagesByTenantParams) ([]InboundMessage, error) {
+	rows, err := q.db.Query(ctx, listInboundMessagesByTenant, arg.TenantID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InboundMessage
+	for rows.Next() {
+		var i InboundMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.HorisenID,
+			&i.Src,
+			&i.Dst,
+			&i.Text,
+			&i.Dcs,
+			&i.ReceivedAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboundNumbersAll = `-- name: ListInboundNumbersAll :many
+SELECT msisdn, tenant_id, label, created_at FROM inbound_numbers ORDER BY tenant_id, msisdn
+`
+
+func (q *Queries) ListInboundNumbersAll(ctx context.Context) ([]InboundNumber, error) {
+	rows, err := q.db.Query(ctx, listInboundNumbersAll)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InboundNumber
+	for rows.Next() {
+		var i InboundNumber
+		if err := rows.Scan(
+			&i.Msisdn,
+			&i.TenantID,
+			&i.Label,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboundNumbersByTenant = `-- name: ListInboundNumbersByTenant :many
+SELECT msisdn, tenant_id, label, created_at FROM inbound_numbers WHERE tenant_id = $1 ORDER BY msisdn
+`
+
+func (q *Queries) ListInboundNumbersByTenant(ctx context.Context, tenantID int64) ([]InboundNumber, error) {
+	rows, err := q.db.Query(ctx, listInboundNumbersByTenant, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []InboundNumber
+	for rows.Next() {
+		var i InboundNumber
+		if err := rows.Scan(
+			&i.Msisdn,
+			&i.TenantID,
+			&i.Label,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
