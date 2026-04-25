@@ -46,6 +46,17 @@ type EnqueueInput struct {
 	ClientRef string // optional
 }
 
+// BulkResult is one row in the response of EnqueueBulk: either Msg is set
+// (queued successfully) or Err is set (validation or insertion failure for
+// that specific row). The two are mutually exclusive.
+//
+// Index in the returned slice matches the index of the input slice so the
+// caller can correlate outputs back to inputs.
+type BulkResult struct {
+	Msg *Message
+	Err error
+}
+
 // Service groups message operations backed by Postgres.
 type Service struct {
 	pool *pgxpool.Pool
@@ -97,6 +108,28 @@ func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (*Message, error
 		return nil, fmt.Errorf("insert message: %w", err)
 	}
 	return fromRow(row), nil
+}
+
+// EnqueueBulk inserts N messages, returning per-row results. Rows that fail
+// validation or hit ErrDuplicateClientRef are reported in the result with
+// `Err` set; successful rows have `Msg` set. Length and order of the
+// returned slice match the input.
+//
+// Partial-accept semantics: a single bad row never blocks the others. We
+// don't wrap the inserts in a single transaction because a failed INSERT
+// would poison the whole tx; instead each CreateMessage is its own atomic
+// op (no inter-row state to coordinate).
+func (s *Service) EnqueueBulk(ctx context.Context, inputs []EnqueueInput) []BulkResult {
+	out := make([]BulkResult, len(inputs))
+	for i, in := range inputs {
+		msg, err := s.Enqueue(ctx, in)
+		if err != nil {
+			out[i] = BulkResult{Err: err}
+			continue
+		}
+		out[i] = BulkResult{Msg: msg}
+	}
+	return out
 }
 
 // ListOpts are the filters for ListMessages. Empty fields are no-ops.

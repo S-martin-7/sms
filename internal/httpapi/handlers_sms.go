@@ -62,6 +62,122 @@ func toResp(m *sms.Message) messageResp {
 	}
 }
 
+// MaxBulkBatchSize caps a single POST /v1/sms/bulk to keep memory + DB
+// load predictable. Tenants with bigger sends should chunk client-side.
+const MaxBulkBatchSize = 1000
+
+type bulkSendReq struct {
+	DefaultSender string         `json:"default_sender"`
+	Messages      []bulkSendItem `json:"messages"`
+}
+
+type bulkSendItem struct {
+	To        string `json:"to"`
+	Text      string `json:"text"`
+	Sender    string `json:"sender,omitempty"`     // overrides default_sender for this row
+	ClientRef string `json:"client_ref,omitempty"` // optional idempotency key
+}
+
+type bulkResultRow struct {
+	Index     int     `json:"index"`               // matches request position
+	ID        string  `json:"id,omitempty"`        // populated on accepted
+	To        string  `json:"to"`
+	Status    string  `json:"status"`              // queued|rejected
+	ClientRef *string `json:"client_ref,omitempty"`
+	Error     string  `json:"error,omitempty"`     // populated on rejected
+	ErrorCode string  `json:"error_code,omitempty"`
+}
+
+type bulkSendResp struct {
+	BatchID  string          `json:"batch_id"`
+	Accepted int             `json:"accepted"`
+	Rejected int             `json:"rejected"`
+	Messages []bulkResultRow `json:"messages"`
+}
+
+// SendBulkSMSHandler handles POST /v1/sms/bulk — enqueue many messages in
+// one request. Per-row partial accept: validation/duplicate failures are
+// reported in the response without blocking the rest.
+func SendBulkSMSHandler(svc *sms.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tenantID := httpx.TenantIDFrom(r.Context())
+		if tenantID == 0 {
+			httpx.WriteError(w, http.StatusUnauthorized, "unauthorized", "missing tenant")
+			return
+		}
+
+		var in bulkSendReq
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid json")
+			return
+		}
+		if len(in.Messages) == 0 {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "messages must be non-empty")
+			return
+		}
+		if len(in.Messages) > MaxBulkBatchSize {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("batch too large: %d > %d", len(in.Messages), MaxBulkBatchSize))
+			return
+		}
+		defaultSender := strings.TrimSpace(in.DefaultSender)
+
+		inputs := make([]sms.EnqueueInput, len(in.Messages))
+		for i, m := range in.Messages {
+			sender := strings.TrimSpace(m.Sender)
+			if sender == "" {
+				sender = defaultSender
+			}
+			inputs[i] = sms.EnqueueInput{
+				TenantID:  tenantID,
+				Sender:    sender,
+				Recipient: strings.TrimSpace(m.To),
+				Text:      m.Text,
+				ClientRef: strings.TrimSpace(m.ClientRef),
+			}
+		}
+
+		results := svc.EnqueueBulk(r.Context(), inputs)
+
+		out := bulkSendResp{
+			BatchID:  "b_" + uuid.New().String(),
+			Messages: make([]bulkResultRow, len(results)),
+		}
+		for i, res := range results {
+			row := bulkResultRow{
+				Index: i,
+				To:    in.Messages[i].To,
+			}
+			if ref := strings.TrimSpace(in.Messages[i].ClientRef); ref != "" {
+				row.ClientRef = &ref
+			}
+			if res.Err != nil {
+				row.Status = "rejected"
+				row.Error = res.Err.Error()
+				row.ErrorCode = bulkErrorCode(res.Err)
+				out.Rejected++
+			} else {
+				row.Status = "queued"
+				row.ID = res.Msg.ID.String()
+				out.Accepted++
+			}
+			out.Messages[i] = row
+		}
+		httpx.WriteJSON(w, http.StatusAccepted, out)
+	}
+}
+
+// bulkErrorCode maps known error sentinels to a stable, machine-friendly
+// code. Anything unknown bucketed as bad_request.
+func bulkErrorCode(err error) string {
+	switch {
+	case errors.Is(err, sms.ErrDuplicateClientRef):
+		return "duplicate_client_ref"
+	default:
+		return "bad_request"
+	}
+}
+
 // SendSMSHandler handles POST /v1/sms — enqueue a single message.
 func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

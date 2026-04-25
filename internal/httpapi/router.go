@@ -41,6 +41,7 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Use(middleware.APIKey(d.TenancySvc, d.APIKeyPepper))
 		r.Get("/v1/ping", PingHandler())
 		r.Post("/v1/sms", SendSMSHandler(d.SMSSvc))
+		r.Post("/v1/sms/bulk", SendBulkSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms", ListSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
 		r.Get("/v1/events", ListEventsHandler(d.EventsSvc))

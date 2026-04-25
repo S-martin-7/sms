@@ -2,6 +2,7 @@ package sms_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/S-martin-7/sms/internal/db"
@@ -203,6 +204,76 @@ func TestListMessages_filterByRecipientAndClientRef(t *testing.T) {
 	got, _ = svc.ListMessages(ctx, tt.ID, sms.ListOpts{ClientRef: "ref-B"})
 	if len(got) != 1 || got[0].Recipient != "56999000002" {
 		t.Errorf("client_ref filter wrong: %+v", got)
+	}
+}
+
+func TestEnqueueBulk_partialAccept(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "T"})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+
+	// Pre-insert one row with client_ref="dup" so the bulk batch hits it.
+	_, _ = svc.Enqueue(ctx, sms.EnqueueInput{
+		TenantID: tt.ID, Sender: "S", Recipient: "56999000000", Text: "first", ClientRef: "dup",
+	})
+
+	inputs := []sms.EnqueueInput{
+		{TenantID: tt.ID, Sender: "S", Recipient: "56999000001", Text: "ok-1", ClientRef: "ok-1"},
+		{TenantID: tt.ID, Sender: "S", Recipient: "56999000002", Text: "ok-2"}, // no client_ref
+		{TenantID: tt.ID, Sender: "S", Recipient: "56999000003", Text: "dup-row", ClientRef: "dup"}, // dup
+		{TenantID: tt.ID, Sender: "", Recipient: "56999000004", Text: "no-sender"},                  // missing sender
+	}
+	results := svc.EnqueueBulk(ctx, inputs)
+	if len(results) != 4 {
+		t.Fatalf("results len = %d, want 4", len(results))
+	}
+	if results[0].Err != nil || results[0].Msg == nil {
+		t.Errorf("row 0 should be accepted: %+v", results[0])
+	}
+	if results[1].Err != nil || results[1].Msg == nil {
+		t.Errorf("row 1 should be accepted: %+v", results[1])
+	}
+	if !errors.Is(results[2].Err, sms.ErrDuplicateClientRef) {
+		t.Errorf("row 2 should be ErrDuplicateClientRef, got %v", results[2].Err)
+	}
+	if results[3].Err == nil {
+		t.Error("row 3 (no sender) should be rejected")
+	}
+}
+
+func TestEnqueueBulk_allAccepted(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{Name: "T"})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+
+	inputs := make([]sms.EnqueueInput, 5)
+	for i := range inputs {
+		inputs[i] = sms.EnqueueInput{
+			TenantID: tt.ID, Sender: "S",
+			Recipient: "56999000" + string(rune('1'+i)) + "00", Text: "x",
+		}
+	}
+	results := svc.EnqueueBulk(ctx, inputs)
+	for i, r := range results {
+		if r.Err != nil {
+			t.Errorf("row %d unexpected err: %v", i, r.Err)
+		}
+		if r.Msg == nil || r.Msg.Status != "queued" {
+			t.Errorf("row %d not queued: %+v", i, r.Msg)
+		}
+	}
+}
+
+func TestEnqueueBulk_emptyInput(t *testing.T) {
+	pool := db.WithTestDB(t)
+	svc := sms.NewService(pool)
+	results := svc.EnqueueBulk(context.Background(), nil)
+	if len(results) != 0 {
+		t.Errorf("empty input should produce empty results, got %d", len(results))
 	}
 }
 
