@@ -49,7 +49,7 @@ func NewRouter(d RouterDeps) http.Handler {
 			BasicPass:   d.HorisenCallbackPass,
 			QuerySecret: d.HorisenCallbackSecret,
 		}))
-		r.Post("/v1/horisen/dlr", DLRStubHandler(d.Logger))
+		r.Post("/v1/horisen/dlr", DLRHandler(d.SMSSvc, d.Logger))
 		r.Post("/v1/horisen/mo", MOStubHandler(d.Logger))
 	})
 
