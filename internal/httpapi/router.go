@@ -14,15 +14,16 @@ import (
 )
 
 type RouterDeps struct {
-	AdminSvc           *admin.Service
-	TenancySvc         *tenancy.Service
-	SMSSvc             *sms.Service
-	JWTSecret          []byte
-	JWTTTL             time.Duration
-	APIKeyPepper       string
-	HorisenCallbackUser string
-	HorisenCallbackPass string
-	Logger             *zerolog.Logger
+	AdminSvc              *admin.Service
+	TenancySvc            *tenancy.Service
+	SMSSvc                *sms.Service
+	JWTSecret             []byte
+	JWTTTL                time.Duration
+	APIKeyPepper          string
+	HorisenCallbackUser   string
+	HorisenCallbackPass   string
+	HorisenCallbackSecret string // for ?sig= query-string auth (legacy / Horisen default)
+	Logger                *zerolog.Logger
 }
 
 // NewRouter mounts /admin/login, /v1/ping, /v1/sms* and /v1/horisen/* routes.
@@ -39,10 +40,15 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
 	})
 
-	// Horisen callback endpoints — protected by HTTP Basic Auth configured in
-	// the Horisen panel ("Use HTTP Basic Authentication" option).
+	// Horisen callback endpoints — accept EITHER HTTP Basic Auth (panel option
+	// "Use HTTP Basic Authentication") OR ?sig=<secret> query string (the
+	// historical / default Horisen format).
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.BasicAuth("horisen", d.HorisenCallbackUser, d.HorisenCallbackPass))
+		r.Use(middleware.HorisenCallbackAuth("horisen", middleware.HorisenCallbackAuthConfig{
+			BasicUser:   d.HorisenCallbackUser,
+			BasicPass:   d.HorisenCallbackPass,
+			QuerySecret: d.HorisenCallbackSecret,
+		}))
 		r.Post("/v1/horisen/dlr", DLRStubHandler(d.Logger))
 		r.Post("/v1/horisen/mo", MOStubHandler(d.Logger))
 	})
