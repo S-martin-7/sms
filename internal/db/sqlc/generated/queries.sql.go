@@ -11,6 +11,208 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const adminStatsByTenant = `-- name: AdminStatsByTenant :many
+SELECT t.id, t.name, COUNT(m.*) AS total,
+       COUNT(*) FILTER (WHERE m.status = 'delivered')                  AS delivered,
+       COUNT(*) FILTER (WHERE m.status IN ('rejected','failed'))       AS rejected
+FROM messages m
+JOIN tenants t ON t.id = m.tenant_id
+WHERE m.created_at >= $1
+GROUP BY t.id, t.name
+ORDER BY total DESC
+LIMIT $2
+`
+
+type AdminStatsByTenantParams struct {
+	CreatedAt pgtype.Timestamptz
+	Limit     int32
+}
+
+type AdminStatsByTenantRow struct {
+	ID        int64
+	Name      string
+	Total     int64
+	Delivered int64
+	Rejected  int64
+}
+
+// Volume per tenant in the window, joined with tenant name; useful for
+// "top customers" widgets.
+func (q *Queries) AdminStatsByTenant(ctx context.Context, arg AdminStatsByTenantParams) ([]AdminStatsByTenantRow, error) {
+	rows, err := q.db.Query(ctx, adminStatsByTenant, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminStatsByTenantRow
+	for rows.Next() {
+		var i AdminStatsByTenantRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Total,
+			&i.Delivered,
+			&i.Rejected,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const adminStatsRecentFailures = `-- name: AdminStatsRecentFailures :many
+SELECT id, tenant_id, recipient, status, error_code, error_message, created_at
+FROM messages
+WHERE status IN ('rejected','failed','undelivered')
+  AND created_at >= $1
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type AdminStatsRecentFailuresParams struct {
+	CreatedAt pgtype.Timestamptz
+	Limit     int32
+}
+
+type AdminStatsRecentFailuresRow struct {
+	ID           pgtype.UUID
+	TenantID     int64
+	Recipient    string
+	Status       string
+	ErrorCode    *string
+	ErrorMessage *string
+	CreatedAt    pgtype.Timestamptz
+}
+
+// Recent message failures or webhook deliveries stuck failed/dead — the
+// "things to look at" list. Two queries kept separate for clarity; this
+// one is for messages.
+func (q *Queries) AdminStatsRecentFailures(ctx context.Context, arg AdminStatsRecentFailuresParams) ([]AdminStatsRecentFailuresRow, error) {
+	rows, err := q.db.Query(ctx, adminStatsRecentFailures, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminStatsRecentFailuresRow
+	for rows.Next() {
+		var i AdminStatsRecentFailuresRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Recipient,
+			&i.Status,
+			&i.ErrorCode,
+			&i.ErrorMessage,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const adminStatsStuckDeliveries = `-- name: AdminStatsStuckDeliveries :many
+SELECT id, tenant_id, endpoint_id, event_type, status, attempts, last_status, last_error, created_at
+FROM webhook_deliveries
+WHERE status IN ('failed','dead')
+  AND created_at >= $1
+ORDER BY created_at DESC
+LIMIT $2
+`
+
+type AdminStatsStuckDeliveriesParams struct {
+	CreatedAt pgtype.Timestamptz
+	Limit     int32
+}
+
+type AdminStatsStuckDeliveriesRow struct {
+	ID         int64
+	TenantID   int64
+	EndpointID int64
+	EventType  string
+	Status     string
+	Attempts   int32
+	LastStatus *int32
+	LastError  *string
+	CreatedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) AdminStatsStuckDeliveries(ctx context.Context, arg AdminStatsStuckDeliveriesParams) ([]AdminStatsStuckDeliveriesRow, error) {
+	rows, err := q.db.Query(ctx, adminStatsStuckDeliveries, arg.CreatedAt, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminStatsStuckDeliveriesRow
+	for rows.Next() {
+		var i AdminStatsStuckDeliveriesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.EndpointID,
+			&i.EventType,
+			&i.Status,
+			&i.Attempts,
+			&i.LastStatus,
+			&i.LastError,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const adminStatsTotals = `-- name: AdminStatsTotals :one
+
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued','sending'))                AS queued,
+    COUNT(*) FILTER (WHERE status = 'sent')                                AS sent,
+    COUNT(*) FILTER (WHERE status = 'delivered')                           AS delivered,
+    COUNT(*) FILTER (WHERE status = 'undelivered')                         AS undelivered,
+    COUNT(*) FILTER (WHERE status IN ('rejected','failed'))                AS rejected,
+    COUNT(*)                                                               AS total
+FROM messages
+WHERE created_at >= $1
+`
+
+type AdminStatsTotalsRow struct {
+	Queued      int64
+	Sent        int64
+	Delivered   int64
+	Undelivered int64
+	Rejected    int64
+	Total       int64
+}
+
+// ===== admin stats =====
+// Counts per status in the last N hours (passed as a timestamp cutoff).
+func (q *Queries) AdminStatsTotals(ctx context.Context, createdAt pgtype.Timestamptz) (AdminStatsTotalsRow, error) {
+	row := q.db.QueryRow(ctx, adminStatsTotals, createdAt)
+	var i AdminStatsTotalsRow
+	err := row.Scan(
+		&i.Queued,
+		&i.Sent,
+		&i.Delivered,
+		&i.Undelivered,
+		&i.Rejected,
+		&i.Total,
+	)
+	return i, err
+}
+
 const appendAuditLog = `-- name: AppendAuditLog :exec
 INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)
 VALUES ($1, $2, $3, $4, $5)

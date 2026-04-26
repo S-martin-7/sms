@@ -332,3 +332,49 @@ SET status = 'pending',
     next_attempt_at = now(),
     claimed_at = NULL
 WHERE id = $1;
+
+-- ===== admin stats =====
+
+-- name: AdminStatsTotals :one
+-- Counts per status in the last N hours (passed as a timestamp cutoff).
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued','sending'))                AS queued,
+    COUNT(*) FILTER (WHERE status = 'sent')                                AS sent,
+    COUNT(*) FILTER (WHERE status = 'delivered')                           AS delivered,
+    COUNT(*) FILTER (WHERE status = 'undelivered')                         AS undelivered,
+    COUNT(*) FILTER (WHERE status IN ('rejected','failed'))                AS rejected,
+    COUNT(*)                                                               AS total
+FROM messages
+WHERE created_at >= $1;
+
+-- name: AdminStatsByTenant :many
+-- Volume per tenant in the window, joined with tenant name; useful for
+-- "top customers" widgets.
+SELECT t.id, t.name, COUNT(m.*) AS total,
+       COUNT(*) FILTER (WHERE m.status = 'delivered')                  AS delivered,
+       COUNT(*) FILTER (WHERE m.status IN ('rejected','failed'))       AS rejected
+FROM messages m
+JOIN tenants t ON t.id = m.tenant_id
+WHERE m.created_at >= $1
+GROUP BY t.id, t.name
+ORDER BY total DESC
+LIMIT $2;
+
+-- name: AdminStatsRecentFailures :many
+-- Recent message failures or webhook deliveries stuck failed/dead — the
+-- "things to look at" list. Two queries kept separate for clarity; this
+-- one is for messages.
+SELECT id, tenant_id, recipient, status, error_code, error_message, created_at
+FROM messages
+WHERE status IN ('rejected','failed','undelivered')
+  AND created_at >= $1
+ORDER BY created_at DESC
+LIMIT $2;
+
+-- name: AdminStatsStuckDeliveries :many
+SELECT id, tenant_id, endpoint_id, event_type, status, attempts, last_status, last_error, created_at
+FROM webhook_deliveries
+WHERE status IN ('failed','dead')
+  AND created_at >= $1
+ORDER BY created_at DESC
+LIMIT $2;

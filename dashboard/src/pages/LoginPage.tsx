@@ -17,7 +17,7 @@ export function LoginPage() {
   const [err, setErr] = useState<string | null>(null)
 
   if (isAuthenticated) {
-    const from = (location.state as { from?: string } | null)?.from ?? '/tenants'
+    const from = (location.state as { from?: string } | null)?.from ?? '/resumen'
     return <Navigate to={from} replace />
   }
 
@@ -28,7 +28,7 @@ export function LoginPage() {
       const res = await login.mutateAsync({ email, password })
       const expiresAt = new Date(res.expires_at).getTime()
       setSession({ email, role: res.role, expiresAt }, res.token)
-      navigate('/tenants', { replace: true })
+      navigate('/resumen', { replace: true })
     } catch (e) {
       setErr(errorMessage(e))
     }
@@ -41,11 +41,11 @@ export function LoginPage() {
         className="w-full max-w-sm space-y-5 rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
       >
         <div>
-          <h1 className="text-lg font-semibold text-slate-900">SMS Gateway · Admin</h1>
-          <p className="text-sm text-slate-500">Sign in to manage tenants and messages.</p>
+          <h1 className="text-lg font-semibold text-slate-900">Pasarela SMS · Admin</h1>
+          <p className="text-sm text-slate-500">Ingresa para administrar clientes y mensajes.</p>
         </div>
         <Input
-          label="Email"
+          label="Correo"
           type="email"
           autoComplete="email"
           required
@@ -53,7 +53,7 @@ export function LoginPage() {
           onChange={(e) => setEmail(e.target.value)}
         />
         <Input
-          label="Password"
+          label="Contraseña"
           type="password"
           autoComplete="current-password"
           required
@@ -66,7 +66,7 @@ export function LoginPage() {
           </div>
         )}
         <Button type="submit" loading={login.isPending} className="w-full">
-          Sign in
+          Ingresar
         </Button>
       </form>
     </div>

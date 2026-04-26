@@ -37,8 +37,8 @@ export function TenantsPage() {
     <div className="space-y-4">
       <Card>
         <CardHeader>
-          <h1 className="text-base font-semibold">Tenants</h1>
-          <Button onClick={() => setCreating(true)}>New tenant</Button>
+          <h1 className="text-base font-semibold">Clientes</h1>
+          <Button onClick={() => setCreating(true)}>Nuevo cliente</Button>
         </CardHeader>
         <CardBody className="p-0">
           {tenants.isLoading ? (
@@ -47,31 +47,35 @@ export function TenantsPage() {
             </div>
           ) : tenants.error ? (
             <div className="px-4 py-6 text-sm text-red-600">{errorMessage(tenants.error)}</div>
+          ) : !tenants.data?.length ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-500">
+              No hay clientes todavía. Crea uno con el botón "Nuevo cliente".
+            </div>
           ) : (
             <Table>
               <THead>
                 <TR>
                   <TH>ID</TH>
-                  <TH>Name</TH>
-                  <TH>Status</TH>
-                  <TH>Daily limit</TH>
-                  <TH>Created</TH>
-                  <TH className="text-right">Actions</TH>
+                  <TH>Nombre</TH>
+                  <TH>Estado</TH>
+                  <TH>Límite diario</TH>
+                  <TH>Creado</TH>
+                  <TH className="text-right">Acciones</TH>
                 </TR>
               </THead>
               <TBody>
-                {tenants.data?.map((t) => (
+                {tenants.data.map((t) => (
                   <TR key={t.id}>
                     <TD className="font-mono text-xs text-slate-500">{t.id}</TD>
                     <TD>
-                      <Link to={`/tenants/${t.id}`} className="font-medium text-slate-900 hover:underline">
+                      <Link to={`/clientes/${t.id}`} className="font-medium text-slate-900 hover:underline">
                         {t.name}
                       </Link>
                     </TD>
                     <TD>
                       <Badge value={t.status} />
                     </TD>
-                    <TD>{t.daily_sms_limit ?? '—'}</TD>
+                    <TD>{t.daily_sms_limit ?? 'Sin límite'}</TD>
                     <TD className="text-slate-500">{formatDate(t.created_at)}</TD>
                     <TD className="text-right">
                       {t.status === 'active' ? (
@@ -80,7 +84,7 @@ export function TenantsPage() {
                           loading={setStatus.isPending && setStatus.variables?.id === t.id}
                           onClick={() => setStatus.mutate({ id: t.id, action: 'suspend' })}
                         >
-                          Suspend
+                          Suspender
                         </Button>
                       ) : (
                         <Button
@@ -88,7 +92,7 @@ export function TenantsPage() {
                           loading={setStatus.isPending && setStatus.variables?.id === t.id}
                           onClick={() => setStatus.mutate({ id: t.id, action: 'activate' })}
                         >
-                          Activate
+                          Activar
                         </Button>
                       )}
                     </TD>
@@ -135,33 +139,33 @@ function NewTenantModal({ onClose }: { onClose: () => void }) {
     <Modal
       open
       onClose={onClose}
-      title="New tenant"
+      title="Nuevo cliente"
       footer={
         <>
           <Button variant="secondary" onClick={onClose}>
-            Cancel
+            Cancelar
           </Button>
           <Button onClick={onSubmit} loading={create.isPending} disabled={!name}>
-            Create
+            Crear
           </Button>
         </>
       }
     >
       <form onSubmit={onSubmit} className="space-y-4">
         <Input
-          label="Name"
+          label="Nombre"
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
           placeholder="Acme Corp"
         />
         <Input
-          label="Daily SMS limit (optional)"
+          label="Límite diario de SMS (opcional)"
           type="number"
           min={1}
           value={dailyLimit}
           onChange={(e) => setDailyLimit(e.target.value)}
-          placeholder="leave blank for unlimited"
+          placeholder="dejar en blanco = sin límite"
         />
         {err && (
           <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>

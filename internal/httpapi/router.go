@@ -12,6 +12,7 @@ import (
 	"github.com/S-martin-7/sms/internal/tenancy"
 	"github.com/S-martin-7/sms/internal/webhooks"
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 )
 
@@ -22,6 +23,7 @@ type RouterDeps struct {
 	WebhooksSvc           *webhooks.Service
 	EventsSvc             *events.Service
 	BalanceCache          *BalanceCache // nil → /v1/balance returns 503
+	Pool                  *pgxpool.Pool // for ad-hoc admin queries (stats)
 	JWTSecret             []byte
 	JWTTTL                time.Duration
 	APIKeyPepper          string
@@ -53,6 +55,7 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Post("/admin/api-keys/{id}/revoke", AdminRevokeAPIKeyHandler(d.TenancySvc, d.AdminSvc))
 
 		r.Get("/admin/messages", AdminListMessagesHandler(d.SMSSvc))
+		r.Get("/admin/stats", AdminStatsHandler(d.Pool))
 
 		r.Get("/admin/tenants/{id}/webhooks", AdminListEndpointsForTenantHandler(d.WebhooksSvc))
 		r.Get("/admin/tenants/{id}/webhook-deliveries", AdminListDeliveriesHandler(d.WebhooksSvc))

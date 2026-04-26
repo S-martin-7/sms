@@ -111,6 +111,7 @@ func main() {
 		WebhooksSvc:           whSvc,
 		EventsSvc:             eventsSvc,
 		BalanceCache:          balanceCache,
+		Pool:                  pool,
 		JWTSecret:             []byte(cfg.JWTSecret),
 		JWTTTL:                time.Duration(cfg.JWTTTLHours) * time.Hour,
 		APIKeyPepper:          cfg.APIKeyPepper,
