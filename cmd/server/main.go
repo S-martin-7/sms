@@ -52,6 +52,29 @@ func main() {
 	go whDispatcher.Start(ctx)
 	log.Info().Msg("webhook dispatcher enabled")
 
+	// Balance endpoint (OAuth2). Wire only if creds + URLs are configured;
+	// otherwise leave the cache nil so the handler 503s with a clear hint.
+	var balanceCache *httpapi.BalanceCache
+	if cfg.HorisenOAuthClientID != "" && cfg.HorisenOAuthClientSecret != "" &&
+		cfg.HorisenOAuthTokenURL != "" && cfg.HorisenBalanceURL != "" {
+		tokens := horisen.NewTokenCache(horisen.OAuthConfig{
+			ClientID:     cfg.HorisenOAuthClientID,
+			ClientSecret: cfg.HorisenOAuthClientSecret,
+			TokenURL:     cfg.HorisenOAuthTokenURL,
+		})
+		balClient, err := horisen.NewBalanceClient(horisen.BalanceClientConfig{
+			URL:    cfg.HorisenBalanceURL,
+			Tokens: tokens,
+		})
+		if err != nil {
+			log.Fatal().Err(err).Msg("balance client init failed")
+		}
+		balanceCache = httpapi.NewBalanceCache(balClient, time.Duration(cfg.BalanceCacheSeconds)*time.Second)
+		log.Info().Int("cache_seconds", cfg.BalanceCacheSeconds).Msg("balance endpoint enabled")
+	} else {
+		log.Warn().Msg("balance endpoint disabled — OAuth2 vars not set")
+	}
+
 	// Start the Horisen outbox worker (only if creds are configured).
 	if cfg.HorisenBaseURL != "" && cfg.HorisenUsername != "" && cfg.HorisenPassword != "" {
 		hc, err := horisen.New(horisen.Config{
@@ -87,6 +110,7 @@ func main() {
 		SMSSvc:                smsSvc,
 		WebhooksSvc:           whSvc,
 		EventsSvc:             eventsSvc,
+		BalanceCache:          balanceCache,
 		JWTSecret:             []byte(cfg.JWTSecret),
 		JWTTTL:                time.Duration(cfg.JWTTTLHours) * time.Hour,
 		APIKeyPepper:          cfg.APIKeyPepper,

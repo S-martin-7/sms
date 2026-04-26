@@ -21,6 +21,7 @@ type RouterDeps struct {
 	SMSSvc                *sms.Service
 	WebhooksSvc           *webhooks.Service
 	EventsSvc             *events.Service
+	BalanceCache          *BalanceCache // nil → /v1/balance returns 503
 	JWTSecret             []byte
 	JWTTTL                time.Duration
 	APIKeyPepper          string
@@ -70,6 +71,7 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/v1/sms", ListSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
 		r.Get("/v1/events", ListEventsHandler(d.EventsSvc))
+		r.Get("/v1/balance", BalanceHandler(d.BalanceCache))
 		r.Post("/v1/webhooks", CreateWebhookHandler(d.WebhooksSvc))
 		r.Get("/v1/webhooks", ListWebhooksHandler(d.WebhooksSvc))
 		r.Get("/v1/webhooks/{id}", GetWebhookHandler(d.WebhooksSvc))

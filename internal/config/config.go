@@ -29,6 +29,15 @@ type Config struct {
 	HorisenCallbackPass    string
 	HorisenTLSServerName   string
 	PublicBaseURL          string
+
+	// OAuth2 client_credentials wiring for the Balance API and any other
+	// finance/customer endpoints that require a bearer token instead of
+	// the SMS-send Basic auth.
+	HorisenOAuthClientID     string
+	HorisenOAuthClientSecret string
+	HorisenOAuthTokenURL     string
+	HorisenBalanceURL        string
+	BalanceCacheSeconds      int
 }
 
 func Load() (*Config, error) {
@@ -54,6 +63,11 @@ func Load() (*Config, error) {
 	cfg.HorisenCallbackPass = os.Getenv("HORISEN_CALLBACK_PASSWORD")
 	cfg.HorisenTLSServerName = os.Getenv("HORISEN_TLS_SERVER_NAME")
 	cfg.PublicBaseURL = os.Getenv("PUBLIC_BASE_URL")
+	cfg.HorisenOAuthClientID = os.Getenv("HORISEN_OAUTH_CLIENT_ID")
+	cfg.HorisenOAuthClientSecret = os.Getenv("HORISEN_OAUTH_CLIENT_SECRET")
+	cfg.HorisenOAuthTokenURL = os.Getenv("HORISEN_OAUTH_TOKEN_URL")
+	cfg.HorisenBalanceURL = os.Getenv("HORISEN_BALANCE_URL")
+	cfg.BalanceCacheSeconds = envInt("BALANCE_CACHE_SECONDS", 60)
 
 	var missing []string
 	if cfg.DatabaseURL == "" {
