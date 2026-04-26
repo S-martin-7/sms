@@ -1,25 +1,26 @@
 import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, errorMessage } from '@/api/client'
-import type { InboundNumber, Tenant } from '@/api/types'
+import type { InboundNumber } from '@/api/types'
 import { Button } from '@/components/ui/Button'
-import { Card, CardBody, CardHeader } from '@/components/ui/Card'
+import { Card, CardBody } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/Table'
+import { TenantPage, useTenant } from '@/components/TenantWorkspaceLayout'
 import { formatDate } from '@/lib/format'
 
-export function InboundNumbersPage() {
+export function TenantInboundPage() {
+  const { tenant } = useTenant()
   const qc = useQueryClient()
-  const list = useQuery({
+  const all = useQuery({
     queryKey: ['inbound-numbers', 'all'],
     queryFn: async () => {
       const { data } = await api.get<{ numbers: InboundNumber[] }>('/admin/inbound-numbers')
       return data.numbers
     },
   })
-
   const remove = useMutation({
     mutationFn: async (msisdn: string) => {
       await api.delete(`/admin/inbound-numbers/${encodeURIComponent(msisdn)}`)
@@ -27,40 +28,36 @@ export function InboundNumbersPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['inbound-numbers', 'all'] }),
   })
 
+  const mine = (all.data ?? []).filter((n) => n.tenant_id === tenant.id)
   const [adding, setAdding] = useState(false)
 
   return (
-    <div className="space-y-4">
+    <TenantPage
+      title="Números entrantes"
+      action={<Button onClick={() => setAdding(true)}>Asignar número</Button>}
+    >
       <Card>
-        <CardHeader>
-          <h1 className="text-base font-semibold">Números entrantes</h1>
-          <Button onClick={() => setAdding(true)}>Asignar número</Button>
-        </CardHeader>
         <CardBody className="p-0">
-          {list.isLoading ? (
-            <div className="flex justify-center p-10">
-              <Spinner />
-            </div>
-          ) : !list.data?.length ? (
+          {all.isLoading ? (
+            <div className="flex justify-center p-10"><Spinner /></div>
+          ) : !mine.length ? (
             <div className="px-4 py-10 text-center text-sm text-slate-500">
-              No hay números entrantes asignados todavía.
+              Este cliente no tiene números entrantes asignados todavía.
             </div>
           ) : (
             <Table>
               <THead>
                 <TR>
                   <TH>MSISDN</TH>
-                  <TH>Cliente</TH>
                   <TH>Etiqueta</TH>
                   <TH>Asignado</TH>
                   <TH className="text-right">Acciones</TH>
                 </TR>
               </THead>
               <TBody>
-                {list.data.map((n) => (
+                {mine.map((n) => (
                   <TR key={n.msisdn}>
                     <TD className="font-mono">{n.msisdn}</TD>
-                    <TD className="font-mono text-xs">{n.tenant_id}</TD>
                     <TD>{n.label || '—'}</TD>
                     <TD className="text-slate-500">{formatDate(n.created_at)}</TD>
                     <TD className="text-right">
@@ -84,33 +81,27 @@ export function InboundNumbersPage() {
         </CardBody>
       </Card>
 
-      {adding && <AssignModal onClose={() => setAdding(false)} />}
-    </div>
+      {adding && (
+        <AssignModal
+          tenantId={tenant.id}
+          onClose={() => setAdding(false)}
+        />
+      )}
+    </TenantPage>
   )
 }
 
-function AssignModal({ onClose }: { onClose: () => void }) {
+function AssignModal({ tenantId, onClose }: { tenantId: number; onClose: () => void }) {
   const qc = useQueryClient()
   const [msisdn, setMsisdn] = useState('')
-  const [tenantId, setTenantId] = useState('')
   const [label, setLabel] = useState('')
   const [err, setErr] = useState<string | null>(null)
-
-  // Fetch tenants so the operator picks from a dropdown rather than
-  // remembering ids.
-  const tenants = useQuery({
-    queryKey: ['tenants'],
-    queryFn: async () => {
-      const { data } = await api.get<{ tenants: Tenant[] }>('/admin/tenants')
-      return data.tenants
-    },
-  })
 
   const assign = useMutation({
     mutationFn: async () => {
       await api.post('/admin/inbound-numbers', {
         msisdn,
-        tenant_id: Number(tenantId),
+        tenant_id: tenantId,
         label: label || undefined,
       })
     },
@@ -121,11 +112,7 @@ function AssignModal({ onClose }: { onClose: () => void }) {
     onError: (e) => setErr(errorMessage(e)),
   })
 
-  const onSubmit = (e: FormEvent) => {
-    e.preventDefault()
-    setErr(null)
-    assign.mutate()
-  }
+  const onSubmit = (e: FormEvent) => { e.preventDefault(); setErr(null); assign.mutate() }
 
   return (
     <Modal
@@ -134,12 +121,8 @@ function AssignModal({ onClose }: { onClose: () => void }) {
       title="Asignar número entrante"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose}>
-            Cancelar
-          </Button>
-          <Button onClick={onSubmit} loading={assign.isPending} disabled={!msisdn || !tenantId}>
-            Asignar
-          </Button>
+          <Button variant="secondary" onClick={onClose}>Cancelar</Button>
+          <Button onClick={onSubmit} loading={assign.isPending} disabled={!msisdn}>Asignar</Button>
         </>
       }
     >
@@ -151,31 +134,13 @@ function AssignModal({ onClose }: { onClose: () => void }) {
           onChange={(e) => setMsisdn(e.target.value)}
           placeholder="569XXXXXXXX"
         />
-        <div className="flex flex-col gap-1">
-          <label className="text-sm font-medium text-slate-700">Cliente</label>
-          <select
-            required
-            className="rounded-md border border-slate-300 px-3 py-2 text-sm"
-            value={tenantId}
-            onChange={(e) => setTenantId(e.target.value)}
-          >
-            <option value="">— elige un cliente —</option>
-            {tenants.data?.map((t) => (
-              <option key={t.id} value={t.id}>
-                {t.name} (id={t.id})
-              </option>
-            ))}
-          </select>
-        </div>
         <Input
           label="Etiqueta (opcional)"
           value={label}
           onChange={(e) => setLabel(e.target.value)}
           placeholder="código corto marketing"
         />
-        {err && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>
-        )}
+        {err && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{err}</div>}
       </form>
     </Modal>
   )
