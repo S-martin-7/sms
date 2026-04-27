@@ -38,7 +38,12 @@ func NewRouter(d RouterDeps) http.Handler {
 	r := chi.NewRouter()
 	r.Use(httpx.RequestID)
 
-	r.Post("/admin/login", LoginHandler(d.AdminSvc, d.JWTSecret, d.JWTTTL))
+	r.Use(httpx.SecurityHeaders)
+
+	// Login is brute-force-able by definition (email+password). Wrap the
+	// endpoint with a per-IP sliding-window limiter — 5 attempts/minute.
+	loginLimiter := httpx.NewLoginRateLimiter(5, 60*time.Second)
+	r.With(loginLimiter.Wrap).Post("/admin/login", LoginHandler(d.AdminSvc, d.JWTSecret, d.JWTTTL))
 
 	// Admin API — JWT-protected dashboard backend.
 	r.Group(func(r chi.Router) {

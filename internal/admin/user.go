@@ -36,8 +36,11 @@ func NewService(pool *pgxpool.Pool, bcryptCost int) *Service {
 
 func (s *Service) CreateAdmin(ctx context.Context, email, password, role string) (*User, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if email == "" || len(password) < 8 {
-		return nil, fmt.Errorf("email required and password must be >= 8 chars")
+	if email == "" {
+		return nil, fmt.Errorf("email required")
+	}
+	if err := ValidatePassword(password); err != nil {
+		return nil, err
 	}
 	if role != "superadmin" && role != "operator" {
 		return nil, fmt.Errorf("invalid role %q", role)

@@ -27,6 +27,8 @@ func main() {
 		err = runKey(rest)
 	case "inbound":
 		err = runInbound(rest)
+	case "seed":
+		err = runSeed(rest)
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -57,7 +59,8 @@ Commands:
   key revoke --id N
   inbound assign --msisdn 569... --tenant-id N [--label "..."]
   inbound list
-  inbound unassign --msisdn 569...`)
+  inbound unassign --msisdn 569...
+  seed --tenant-id N [--contacts 50] [--messages 60] [--scheduled 5]`)
 }
 
 func runMigrate(args []string) error {
