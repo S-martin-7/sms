@@ -17,6 +17,7 @@ import { TenantDeliveriesPage } from '@/pages/tenant/TenantDeliveriesPage'
 import { TenantInboundPage } from '@/pages/tenant/TenantInboundPage'
 import { TenantContactsPage } from '@/pages/tenant/TenantContactsPage'
 import { TenantReportsPage } from '@/pages/tenant/TenantReportsPage'
+import { TenantScheduledPage } from '@/pages/tenant/TenantScheduledPage'
 
 export default function App() {
   return (
@@ -51,6 +52,7 @@ export default function App() {
             <Route index element={<Navigate to="resumen" replace />} />
             <Route path="resumen" element={<TenantOverviewPage />} />
             <Route path="enviar" element={<TenantSendPage />} />
+            <Route path="programados" element={<TenantScheduledPage />} />
             <Route path="mensajes" element={<TenantMessagesPage />} />
             <Route path="contactos" element={<TenantContactsPage />} />
             <Route path="reportes" element={<TenantReportsPage />} />

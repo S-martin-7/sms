@@ -438,6 +438,47 @@ func (q *Queries) BumpMessageRetry(ctx context.Context, arg BumpMessageRetryPara
 	return err
 }
 
+const claimDueScheduledSend = `-- name: ClaimDueScheduledSend :one
+UPDATE scheduled_sends
+SET status = 'running', updated_at = now()
+WHERE id = (
+    SELECT id FROM scheduled_sends
+    WHERE status = 'pending' AND send_at <= now()
+    ORDER BY send_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING id, tenant_id, name, sender, text, recipients, list_id, send_at, recurrence, recurrence_days, timezone, status, last_run_at, last_batch_id, total_runs, last_error, created_by, api_key_id, created_at, updated_at
+`
+
+func (q *Queries) ClaimDueScheduledSend(ctx context.Context) (ScheduledSend, error) {
+	row := q.db.QueryRow(ctx, claimDueScheduledSend)
+	var i ScheduledSend
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Sender,
+		&i.Text,
+		&i.Recipients,
+		&i.ListID,
+		&i.SendAt,
+		&i.Recurrence,
+		&i.RecurrenceDays,
+		&i.Timezone,
+		&i.Status,
+		&i.LastRunAt,
+		&i.LastBatchID,
+		&i.TotalRuns,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.ApiKeyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const claimPendingDelivery = `-- name: ClaimPendingDelivery :one
 UPDATE webhook_deliveries
 SET status = 'in_flight',
@@ -834,6 +875,77 @@ func (q *Queries) CreateMessage(ctx context.Context, arg CreateMessageParams) (M
 	return i, err
 }
 
+const createScheduledSend = `-- name: CreateScheduledSend :one
+
+INSERT INTO scheduled_sends (
+    tenant_id, name, sender, text, recipients, list_id,
+    send_at, recurrence, recurrence_days, timezone,
+    created_by, api_key_id
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, COALESCE($10, 'America/Santiago'),
+    $11, $12
+)
+RETURNING id, tenant_id, name, sender, text, recipients, list_id, send_at, recurrence, recurrence_days, timezone, status, last_run_at, last_batch_id, total_runs, last_error, created_by, api_key_id, created_at, updated_at
+`
+
+type CreateScheduledSendParams struct {
+	TenantID       int64
+	Name           *string
+	Sender         string
+	Text           string
+	Recipients     []byte
+	ListID         *int64
+	SendAt         pgtype.Timestamptz
+	Recurrence     *string
+	RecurrenceDays []int16
+	Column10       interface{}
+	CreatedBy      *int64
+	ApiKeyID       *int64
+}
+
+// ===== scheduled_sends =====
+func (q *Queries) CreateScheduledSend(ctx context.Context, arg CreateScheduledSendParams) (ScheduledSend, error) {
+	row := q.db.QueryRow(ctx, createScheduledSend,
+		arg.TenantID,
+		arg.Name,
+		arg.Sender,
+		arg.Text,
+		arg.Recipients,
+		arg.ListID,
+		arg.SendAt,
+		arg.Recurrence,
+		arg.RecurrenceDays,
+		arg.Column10,
+		arg.CreatedBy,
+		arg.ApiKeyID,
+	)
+	var i ScheduledSend
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Sender,
+		&i.Text,
+		&i.Recipients,
+		&i.ListID,
+		&i.SendAt,
+		&i.Recurrence,
+		&i.RecurrenceDays,
+		&i.Timezone,
+		&i.Status,
+		&i.LastRunAt,
+		&i.LastBatchID,
+		&i.TotalRuns,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.ApiKeyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, daily_sms_limit, monthly_budget)
 VALUES ($1, $2, $3)
@@ -930,6 +1042,20 @@ DELETE FROM inbound_numbers WHERE msisdn = $1
 
 func (q *Queries) DeleteInboundNumber(ctx context.Context, msisdn string) error {
 	_, err := q.db.Exec(ctx, deleteInboundNumber, msisdn)
+	return err
+}
+
+const deleteScheduledSend = `-- name: DeleteScheduledSend :exec
+DELETE FROM scheduled_sends WHERE id = $1 AND tenant_id = $2
+`
+
+type DeleteScheduledSendParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) DeleteScheduledSend(ctx context.Context, arg DeleteScheduledSendParams) error {
+	_, err := q.db.Exec(ctx, deleteScheduledSend, arg.ID, arg.TenantID)
 	return err
 }
 
@@ -1061,6 +1187,39 @@ func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (Contact
 	return i, err
 }
 
+const getContactListMSISDNs = `-- name: GetContactListMSISDNs :many
+SELECT c.msisdn
+FROM contact_list_members clm
+JOIN contacts c ON c.id = clm.contact_id
+WHERE clm.list_id = $1 AND c.tenant_id = $2 AND c.opt_out = false
+ORDER BY c.id
+`
+
+type GetContactListMSISDNsParams struct {
+	ListID   int64
+	TenantID int64
+}
+
+func (q *Queries) GetContactListMSISDNs(ctx context.Context, arg GetContactListMSISDNsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, getContactListMSISDNs, arg.ListID, arg.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var msisdn string
+		if err := rows.Scan(&msisdn); err != nil {
+			return nil, err
+		}
+		items = append(items, msisdn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getInboundMessage = `-- name: GetInboundMessage :one
 SELECT id, tenant_id, horisen_id, src, dst, text, dcs, received_at, created_at FROM inbound_messages WHERE id = $1 AND tenant_id = $2
 `
@@ -1157,6 +1316,43 @@ func (q *Queries) GetMessageForTenant(ctx context.Context, arg GetMessageForTena
 		&i.CreatedAt,
 		&i.SentAt,
 		&i.FinalAt,
+	)
+	return i, err
+}
+
+const getScheduledSend = `-- name: GetScheduledSend :one
+SELECT id, tenant_id, name, sender, text, recipients, list_id, send_at, recurrence, recurrence_days, timezone, status, last_run_at, last_batch_id, total_runs, last_error, created_by, api_key_id, created_at, updated_at FROM scheduled_sends WHERE id = $1 AND tenant_id = $2
+`
+
+type GetScheduledSendParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) GetScheduledSend(ctx context.Context, arg GetScheduledSendParams) (ScheduledSend, error) {
+	row := q.db.QueryRow(ctx, getScheduledSend, arg.ID, arg.TenantID)
+	var i ScheduledSend
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Sender,
+		&i.Text,
+		&i.Recipients,
+		&i.ListID,
+		&i.SendAt,
+		&i.Recurrence,
+		&i.RecurrenceDays,
+		&i.Timezone,
+		&i.Status,
+		&i.LastRunAt,
+		&i.LastBatchID,
+		&i.TotalRuns,
+		&i.LastError,
+		&i.CreatedBy,
+		&i.ApiKeyID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1854,6 +2050,62 @@ func (q *Queries) ListMessagesFiltered(ctx context.Context, arg ListMessagesFilt
 	return items, nil
 }
 
+const listScheduledSends = `-- name: ListScheduledSends :many
+SELECT id, tenant_id, name, sender, text, recipients, list_id, send_at, recurrence, recurrence_days, timezone, status, last_run_at, last_batch_id, total_runs, last_error, created_by, api_key_id, created_at, updated_at FROM scheduled_sends
+WHERE tenant_id = $1
+ORDER BY
+  CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+  send_at ASC,
+  id DESC
+LIMIT $2
+`
+
+type ListScheduledSendsParams struct {
+	TenantID int64
+	Limit    int32
+}
+
+func (q *Queries) ListScheduledSends(ctx context.Context, arg ListScheduledSendsParams) ([]ScheduledSend, error) {
+	rows, err := q.db.Query(ctx, listScheduledSends, arg.TenantID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ScheduledSend
+	for rows.Next() {
+		var i ScheduledSend
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.Sender,
+			&i.Text,
+			&i.Recipients,
+			&i.ListID,
+			&i.SendAt,
+			&i.Recurrence,
+			&i.RecurrenceDays,
+			&i.Timezone,
+			&i.Status,
+			&i.LastRunAt,
+			&i.LastBatchID,
+			&i.TotalRuns,
+			&i.LastError,
+			&i.CreatedBy,
+			&i.ApiKeyID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTenants = `-- name: ListTenants :many
 SELECT id, name, status, daily_sms_limit, monthly_budget, created_at, updated_at FROM tenants ORDER BY id
 `
@@ -2071,6 +2323,53 @@ func (q *Queries) MarkMessageSent(ctx context.Context, arg MarkMessageSentParams
 	return err
 }
 
+const markScheduledSendFailed = `-- name: MarkScheduledSendFailed :exec
+UPDATE scheduled_sends
+SET status     = 'failed',
+    last_error = $2,
+    updated_at = now()
+WHERE id = $1
+`
+
+type MarkScheduledSendFailedParams struct {
+	ID        int64
+	LastError *string
+}
+
+func (q *Queries) MarkScheduledSendFailed(ctx context.Context, arg MarkScheduledSendFailedParams) error {
+	_, err := q.db.Exec(ctx, markScheduledSendFailed, arg.ID, arg.LastError)
+	return err
+}
+
+const markScheduledSendFired = `-- name: MarkScheduledSendFired :exec
+UPDATE scheduled_sends
+SET status        = $2,
+    send_at       = COALESCE($3, send_at),
+    last_run_at   = now(),
+    last_batch_id = $4,
+    total_runs    = total_runs + 1,
+    last_error    = NULL,
+    updated_at    = now()
+WHERE id = $1
+`
+
+type MarkScheduledSendFiredParams struct {
+	ID          int64
+	Status      string
+	SendAt      pgtype.Timestamptz
+	LastBatchID *string
+}
+
+func (q *Queries) MarkScheduledSendFired(ctx context.Context, arg MarkScheduledSendFiredParams) error {
+	_, err := q.db.Exec(ctx, markScheduledSendFired,
+		arg.ID,
+		arg.Status,
+		arg.SendAt,
+		arg.LastBatchID,
+	)
+	return err
+}
+
 const recoverStaleSending = `-- name: RecoverStaleSending :exec
 UPDATE messages
 SET status = 'queued', claimed_at = NULL
@@ -2149,6 +2448,22 @@ type SetContactOptOutParams struct {
 
 func (q *Queries) SetContactOptOut(ctx context.Context, arg SetContactOptOutParams) error {
 	_, err := q.db.Exec(ctx, setContactOptOut, arg.ID, arg.TenantID, arg.OptOut)
+	return err
+}
+
+const setScheduledSendStatus = `-- name: SetScheduledSendStatus :exec
+UPDATE scheduled_sends SET status = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+`
+
+type SetScheduledSendStatusParams struct {
+	ID       int64
+	TenantID int64
+	Status   string
+}
+
+func (q *Queries) SetScheduledSendStatus(ctx context.Context, arg SetScheduledSendStatusParams) error {
+	_, err := q.db.Exec(ctx, setScheduledSendStatus, arg.ID, arg.TenantID, arg.Status)
 	return err
 }
 

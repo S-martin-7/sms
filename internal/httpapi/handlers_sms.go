@@ -20,6 +20,21 @@ type sendReq struct {
 	To        string `json:"to"`
 	Text      string `json:"text"`
 	ClientRef string `json:"client_ref,omitempty"`
+	// Optional: when set, the message is queued in scheduled_sends instead of
+	// being dispatched immediately. RFC3339 timestamp; the scheduler picks it
+	// up at-or-after this time and runs through the same outbox path.
+	SendAt string `json:"send_at,omitempty"`
+}
+
+type scheduledResp struct {
+	ScheduledID int64     `json:"scheduled_id"`
+	TenantID    int64     `json:"tenant_id"`
+	Sender      string    `json:"sender"`
+	To          string    `json:"to,omitempty"`
+	Recipients  []string  `json:"recipients,omitempty"`
+	Text        string    `json:"text"`
+	Status      string    `json:"status"` // "scheduled"
+	SendAt      time.Time `json:"send_at"`
 }
 
 type messageResp struct {
@@ -69,6 +84,10 @@ const MaxBulkBatchSize = 1000
 type bulkSendReq struct {
 	DefaultSender string         `json:"default_sender"`
 	Messages      []bulkSendItem `json:"messages"`
+	// Optional: when set, the WHOLE batch is scheduled instead of dispatched
+	// immediately. Per-row send_at is not supported (use multiple POSTs for
+	// staggered scheduling).
+	SendAt string `json:"send_at,omitempty"`
 }
 
 type bulkSendItem struct {
@@ -121,6 +140,50 @@ func SendBulkSMSHandler(svc *sms.Service) http.HandlerFunc {
 			return
 		}
 		defaultSender := strings.TrimSpace(in.DefaultSender)
+
+		// Bulk scheduling: schedule the whole batch as one scheduled_send row
+		// targeting all recipients. The scheduler dispatches them via
+		// EnqueueBulk at the configured time.
+		if in.SendAt != "" {
+			when, err := time.Parse(time.RFC3339, in.SendAt)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "send_at must be RFC3339")
+				return
+			}
+			if when.Before(time.Now().Add(-1 * time.Minute)) {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "send_at is in the past")
+				return
+			}
+			recipients := make([]string, 0, len(in.Messages))
+			text := ""
+			for _, m := range in.Messages {
+				to := strings.TrimSpace(m.To)
+				if to == "" || m.Text == "" {
+					httpx.WriteError(w, http.StatusBadRequest, "bad_request", "every message needs to+text")
+					return
+				}
+				if text == "" {
+					text = m.Text
+				} else if text != m.Text {
+					httpx.WriteError(w, http.StatusBadRequest, "bad_request",
+						"scheduled bulk requires the same text for every recipient")
+					return
+				}
+				recipients = append(recipients, to)
+			}
+			row, err := svc.EnqueueScheduledSend(r.Context(), tenantID,
+				defaultSender, text, recipients, when, nil, "API bulk send")
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+			httpx.WriteJSON(w, http.StatusAccepted, scheduledResp{
+				ScheduledID: row.ID, TenantID: row.TenantID,
+				Sender: row.Sender, Recipients: recipients, Text: row.Text,
+				Status: "scheduled", SendAt: row.SendAt.Time,
+			})
+			return
+		}
 
 		inputs := make([]sms.EnqueueInput, len(in.Messages))
 		for i, m := range in.Messages {
@@ -178,7 +241,8 @@ func bulkErrorCode(err error) string {
 	}
 }
 
-// SendSMSHandler handles POST /v1/sms — enqueue a single message.
+// SendSMSHandler handles POST /v1/sms — enqueue a single message OR schedule
+// it for future delivery if `send_at` is in the body.
 func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tenantID := httpx.TenantIDFrom(r.Context())
@@ -196,6 +260,31 @@ func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 		in.To = strings.TrimSpace(in.To)
 		if in.Sender == "" || in.To == "" || in.Text == "" {
 			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "sender, to and text required")
+			return
+		}
+
+		// Scheduling path — same shape as immediate, plus send_at.
+		if in.SendAt != "" {
+			when, err := time.Parse(time.RFC3339, in.SendAt)
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "send_at must be RFC3339")
+				return
+			}
+			if when.Before(time.Now().Add(-1 * time.Minute)) {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", "send_at is in the past")
+				return
+			}
+			row, err := svc.EnqueueScheduledSend(r.Context(), tenantID,
+				in.Sender, in.Text, []string{in.To}, when, nil, "API single send")
+			if err != nil {
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+				return
+			}
+			httpx.WriteJSON(w, http.StatusAccepted, scheduledResp{
+				ScheduledID: row.ID, TenantID: row.TenantID,
+				Sender: row.Sender, To: in.To, Text: row.Text,
+				Status: "scheduled", SendAt: row.SendAt.Time,
+			})
 			return
 		}
 

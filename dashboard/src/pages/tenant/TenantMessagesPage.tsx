@@ -9,8 +9,18 @@ import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/Table'
+import { MessageTimeline } from '@/components/MessageTimeline'
 import { TenantPage, useTenant } from '@/components/TenantWorkspaceLayout'
 import { formatDate, truncate } from '@/lib/format'
+
+function Field({ k, v }: { k: string; v: React.ReactNode }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-xs font-medium uppercase tracking-wider text-ink-mute">{k}</span>
+      <span className="text-ink">{v}</span>
+    </div>
+  )
+}
 
 // Tenant-scoped messages list. Same shape as the global MessagesPage but
 // `tenant_id` is locked to the current workspace.
@@ -154,9 +164,24 @@ export function TenantMessagesPage() {
 
       {opened && (
         <Modal open onClose={() => setOpened(null)} title="Detalle del mensaje" width="lg">
-          <pre className="overflow-x-auto rounded-md bg-slate-900 p-3 text-xs text-slate-100">
-            {JSON.stringify(opened, null, 2)}
-          </pre>
+          <div className="space-y-6">
+            <MessageTimeline msg={opened} />
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+              <Field k="ID" v={<span className="font-mono text-xs">{opened.id}</span>} />
+              <Field k="Remitente" v={opened.sender} />
+              <Field k="Destino" v={<span className="font-mono">{opened.to}</span>} />
+              <Field k="Codificación" v={`${opened.dcs} · ${opened.num_parts} parte${opened.num_parts === 1 ? '' : 's'}`} />
+              <Field k="Intentos" v={opened.attempts} />
+              <Field k="Referencia cliente" v={opened.client_ref ?? '—'} />
+              <Field k="Horisen msgId" v={opened.horisen_msg_id ? <span className="font-mono text-xs">{opened.horisen_msg_id}</span> : '—'} />
+            </div>
+            <div>
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-ink-mute">Texto enviado</div>
+              <div className="whitespace-pre-wrap rounded-md border border-border bg-canvas p-3 text-sm">
+                {opened.text}
+              </div>
+            </div>
+          </div>
         </Modal>
       )}
     </TenantPage>

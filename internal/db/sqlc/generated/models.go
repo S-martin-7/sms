@@ -114,6 +114,29 @@ type Message struct {
 	FinalAt       pgtype.Timestamptz
 }
 
+type ScheduledSend struct {
+	ID             int64
+	TenantID       int64
+	Name           *string
+	Sender         string
+	Text           string
+	Recipients     []byte
+	ListID         *int64
+	SendAt         pgtype.Timestamptz
+	Recurrence     *string
+	RecurrenceDays []int16
+	Timezone       string
+	Status         string
+	LastRunAt      pgtype.Timestamptz
+	LastBatchID    *string
+	TotalRuns      int32
+	LastError      *string
+	CreatedBy      *int64
+	ApiKeyID       *int64
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+}
+
 type Tenant struct {
 	ID            int64
 	Name          string

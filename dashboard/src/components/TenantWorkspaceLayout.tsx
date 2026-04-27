@@ -102,6 +102,7 @@ export function TenantWorkspaceLayout() {
 
             <div className={sectionLabel}>Operación</div>
             <NavLink to="enviar" className={navLinkClass}>Enviar SMS</NavLink>
+            <NavLink to="programados" className={navLinkClass}>Programados</NavLink>
             <NavLink to="mensajes" className={navLinkClass}>Mensajes</NavLink>
             <NavLink to="contactos" className={navLinkClass}>Contactos</NavLink>
             <NavLink to="reportes" className={navLinkClass}>Reportes</NavLink>

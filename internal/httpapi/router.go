@@ -78,6 +78,13 @@ func NewRouter(d RouterDeps) http.Handler {
 
 		// Reportes per-tenant con time series.
 		r.Get("/admin/tenants/{id}/report", AdminTenantReportHandler(d.Pool))
+
+		// Programación de envíos (one-shot o weekly).
+		r.Get("/admin/tenants/{id}/scheduled", AdminListScheduledHandler(d.Pool))
+		r.Post("/admin/tenants/{id}/scheduled", AdminCreateScheduledHandler(d.Pool, d.AdminSvc))
+		r.Post("/admin/tenants/{id}/scheduled/import", AdminImportScheduledXLSXHandler(d.Pool, d.AdminSvc))
+		r.Post("/admin/scheduled/{id}/pause", AdminPauseScheduledHandler(d.Pool, d.AdminSvc))
+		r.Delete("/admin/scheduled/{id}", AdminDeleteScheduledHandler(d.Pool, d.AdminSvc))
 	})
 
 	r.Group(func(r chi.Router) {

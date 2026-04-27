@@ -161,3 +161,28 @@ CREATE TABLE contact_list_members (
     added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (list_id, contact_id)
 );
+
+CREATE TABLE scheduled_sends (
+    id              BIGSERIAL PRIMARY KEY,
+    tenant_id       BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name            TEXT,
+    sender          TEXT NOT NULL,
+    text            TEXT NOT NULL,
+    recipients      JSONB,
+    list_id         BIGINT REFERENCES contact_lists(id) ON DELETE SET NULL,
+    send_at         TIMESTAMPTZ NOT NULL,
+    recurrence      TEXT,
+    recurrence_days SMALLINT[],
+    timezone        TEXT NOT NULL DEFAULT 'America/Santiago',
+    status          TEXT NOT NULL DEFAULT 'pending',
+    last_run_at     TIMESTAMPTZ,
+    last_batch_id   TEXT,
+    total_runs      INT NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    created_by      BIGINT REFERENCES admin_users(id) ON DELETE SET NULL,
+    api_key_id      BIGINT REFERENCES api_keys(id) ON DELETE SET NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_scheduled_pickup ON scheduled_sends(send_at) WHERE status = 'pending';
+CREATE INDEX idx_scheduled_tenant ON scheduled_sends(tenant_id, created_at DESC);

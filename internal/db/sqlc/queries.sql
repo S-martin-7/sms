@@ -481,3 +481,73 @@ WHERE tenant_id = sqlc.arg(tenant_id)
 GROUP BY recipient
 ORDER BY total DESC
 LIMIT sqlc.arg(lim);
+
+-- ===== scheduled_sends =====
+
+-- name: CreateScheduledSend :one
+INSERT INTO scheduled_sends (
+    tenant_id, name, sender, text, recipients, list_id,
+    send_at, recurrence, recurrence_days, timezone,
+    created_by, api_key_id
+) VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9, COALESCE($10, 'America/Santiago'),
+    $11, $12
+)
+RETURNING *;
+
+-- name: GetScheduledSend :one
+SELECT * FROM scheduled_sends WHERE id = $1 AND tenant_id = $2;
+
+-- name: ListScheduledSends :many
+SELECT * FROM scheduled_sends
+WHERE tenant_id = $1
+ORDER BY
+  CASE WHEN status = 'pending' THEN 0 ELSE 1 END,
+  send_at ASC,
+  id DESC
+LIMIT $2;
+
+-- name: SetScheduledSendStatus :exec
+UPDATE scheduled_sends SET status = $3, updated_at = now()
+WHERE id = $1 AND tenant_id = $2;
+
+-- name: DeleteScheduledSend :exec
+DELETE FROM scheduled_sends WHERE id = $1 AND tenant_id = $2;
+
+-- name: ClaimDueScheduledSend :one
+UPDATE scheduled_sends
+SET status = 'running', updated_at = now()
+WHERE id = (
+    SELECT id FROM scheduled_sends
+    WHERE status = 'pending' AND send_at <= now()
+    ORDER BY send_at
+    FOR UPDATE SKIP LOCKED
+    LIMIT 1
+)
+RETURNING *;
+
+-- name: MarkScheduledSendFired :exec
+UPDATE scheduled_sends
+SET status        = $2,
+    send_at       = COALESCE($3, send_at),
+    last_run_at   = now(),
+    last_batch_id = $4,
+    total_runs    = total_runs + 1,
+    last_error    = NULL,
+    updated_at    = now()
+WHERE id = $1;
+
+-- name: MarkScheduledSendFailed :exec
+UPDATE scheduled_sends
+SET status     = 'failed',
+    last_error = $2,
+    updated_at = now()
+WHERE id = $1;
+
+-- name: GetContactListMSISDNs :many
+SELECT c.msisdn
+FROM contact_list_members clm
+JOIN contacts c ON c.id = clm.contact_id
+WHERE clm.list_id = $1 AND c.tenant_id = $2 AND c.opt_out = false
+ORDER BY c.id;

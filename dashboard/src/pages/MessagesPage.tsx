@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/Input'
 import { Modal } from '@/components/ui/Modal'
 import { Spinner } from '@/components/ui/Spinner'
 import { TBody, TD, TH, THead, TR, Table } from '@/components/ui/Table'
+import { MessageTimeline } from '@/components/MessageTimeline'
 import { formatDate, truncate } from '@/lib/format'
 
 interface Filters {
@@ -209,12 +210,13 @@ function MessageDetailModal({
 }) {
   return (
     <Modal open onClose={onClose} title="Detalle del mensaje" width="lg">
-      <div className="space-y-4">
+      <div className="space-y-6">
+        {/* Courier-tracking timeline at the top — most important visual */}
+        <MessageTimeline msg={msg} />
         <DetailGrid msg={msg} tenantName={tenantName} />
-        <Timeline msg={msg} />
         <div>
-          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Texto</div>
-          <div className="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+          <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-ink-mute">Texto enviado</div>
+          <div className="whitespace-pre-wrap rounded-md border border-border bg-canvas p-3 text-sm">
             {msg.text}
           </div>
         </div>
@@ -247,75 +249,5 @@ function DetailGrid({ msg, tenantName }: { msg: Message; tenantName: string }) {
   )
 }
 
-interface TimelineEvent {
-  label: string
-  at: string
-  variant: 'ok' | 'warn' | 'err' | 'pending'
-  detail?: string
-}
+// Timeline reemplazado por MessageTimeline (componente compartido).
 
-function Timeline({ msg }: { msg: Message }) {
-  const events: TimelineEvent[] = [
-    { label: 'Creado', at: msg.created_at, variant: 'pending' },
-  ]
-  if (msg.sent_at) events.push({ label: 'Enviado a Horisen', at: msg.sent_at, variant: 'ok' })
-
-  if (msg.final_at) {
-    if (msg.status === 'delivered') {
-      events.push({ label: 'Entregado al destinatario', at: msg.final_at, variant: 'ok' })
-    } else if (msg.status === 'undelivered') {
-      events.push({
-        label: 'No entregado',
-        at: msg.final_at,
-        variant: 'warn',
-        detail: errStr(msg),
-      })
-    } else if (msg.status === 'rejected') {
-      events.push({
-        label: 'Rechazado',
-        at: msg.final_at,
-        variant: 'err',
-        detail: errStr(msg),
-      })
-    } else if (msg.status === 'failed') {
-      events.push({
-        label: 'Fallido',
-        at: msg.final_at,
-        variant: 'err',
-        detail: errStr(msg),
-      })
-    }
-  }
-
-  return (
-    <div>
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Timeline</div>
-      <ol className="space-y-2 border-l-2 border-slate-200 pl-4">
-        {events.map((e, idx) => (
-          <li key={idx} className="relative">
-            <span
-              className={`absolute -left-[22px] top-1 h-3 w-3 rounded-full border-2 border-white ${
-                e.variant === 'ok'
-                  ? 'bg-emerald-500'
-                  : e.variant === 'warn'
-                    ? 'bg-amber-500'
-                    : e.variant === 'err'
-                      ? 'bg-red-500'
-                      : 'bg-slate-400'
-              }`}
-            />
-            <div className="text-sm font-medium text-slate-900">{e.label}</div>
-            <div className="text-xs text-slate-500">{formatDate(e.at)}</div>
-            {e.detail && <div className="mt-0.5 text-xs text-red-700">{e.detail}</div>}
-          </li>
-        ))}
-      </ol>
-    </div>
-  )
-}
-
-function errStr(msg: Message): string | undefined {
-  if (!msg.error_code && !msg.error_message) return undefined
-  if (msg.error_code && msg.error_message) return `[${msg.error_code}] ${msg.error_message}`
-  return msg.error_code ?? msg.error_message ?? undefined
-}

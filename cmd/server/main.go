@@ -52,6 +52,14 @@ func main() {
 	go whDispatcher.Start(ctx)
 	log.Info().Msg("webhook dispatcher enabled")
 
+	// Scheduler — picks up due scheduled_sends and dispatches them through
+	// the same outbox path the synchronous /v1/sms uses.
+	scheduler := sms.NewScheduler(sms.SchedulerConfig{
+		Pool: pool, SMSSvc: smsSvc, Logger: log,
+	})
+	go scheduler.Start(ctx)
+	log.Info().Msg("scheduler enabled")
+
 	// Balance endpoint (OAuth2). Wire only if creds + URLs are configured;
 	// otherwise leave the cache nil so the handler 503s with a clear hint.
 	var balanceCache *httpapi.BalanceCache
