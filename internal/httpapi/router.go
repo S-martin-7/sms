@@ -64,6 +64,20 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/admin/inbound-numbers", AdminListInboundNumbersHandler(d.SMSSvc))
 		r.Post("/admin/inbound-numbers", AdminAssignInboundNumberHandler(d.SMSSvc, d.AdminSvc))
 		r.Delete("/admin/inbound-numbers/{msisdn}", AdminUnassignInboundNumberHandler(d.SMSSvc, d.AdminSvc))
+
+		// Contactos + listas (CRUD per-tenant + import CSV).
+		r.Get("/admin/tenants/{id}/contacts", AdminListContactsHandler(d.Pool))
+		r.Post("/admin/tenants/{id}/contacts", AdminCreateContactHandler(d.Pool, d.AdminSvc))
+		r.Post("/admin/tenants/{id}/contacts/import", AdminImportContactsCSVHandler(d.Pool, d.AdminSvc))
+		r.Post("/admin/contacts/{id}/opt-out", AdminContactOptOutHandler(d.Pool, d.AdminSvc))
+		r.Delete("/admin/contacts/{id}", AdminDeleteContactHandler(d.Pool, d.AdminSvc))
+		r.Get("/admin/tenants/{id}/contact-lists", AdminListContactListsHandler(d.Pool))
+		r.Post("/admin/tenants/{id}/contact-lists", AdminCreateContactListHandler(d.Pool, d.AdminSvc))
+		r.Delete("/admin/contact-lists/{id}", AdminDeleteContactListHandler(d.Pool, d.AdminSvc))
+		r.Post("/admin/contact-lists/{id}/members", AdminAddContactsToListHandler(d.Pool, d.AdminSvc))
+
+		// Reportes per-tenant con time series.
+		r.Get("/admin/tenants/{id}/report", AdminTenantReportHandler(d.Pool))
 	})
 
 	r.Group(func(r chi.Router) {

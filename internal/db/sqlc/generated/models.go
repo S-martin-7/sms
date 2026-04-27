@@ -39,6 +39,33 @@ type AuditLog struct {
 	CreatedAt  pgtype.Timestamptz
 }
 
+type Contact struct {
+	ID        int64
+	TenantID  int64
+	Msisdn    string
+	Name      *string
+	Notes     *string
+	OptOut    bool
+	OptOutAt  pgtype.Timestamptz
+	Metadata  []byte
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+type ContactList struct {
+	ID          int64
+	TenantID    int64
+	Name        string
+	Description *string
+	CreatedAt   pgtype.Timestamptz
+}
+
+type ContactListMember struct {
+	ListID    int64
+	ContactID int64
+	AddedAt   pgtype.Timestamptz
+}
+
 type Event struct {
 	ID        int64
 	TenantID  int64

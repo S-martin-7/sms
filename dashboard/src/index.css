@@ -2,12 +2,44 @@
 @tailwind components;
 @tailwind utilities;
 
-html, body, #root {
-  height: 100%;
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+  html {
+    font-family: 'Geist', system-ui, sans-serif;
+    /* Optical refinements — these matter even at 14px. */
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: 'cv11' on, 'ss03' on;  /* nicer Geist alternates */
+  }
+  body {
+    background-color: #fafaf7;
+    color: #18181b;
+  }
 }
 
-/* Subtle scrollbar override so it doesn't fight the slate palette. */
+@layer utilities {
+  /* Tabular numbers — applied to everything that should align in columns
+     (KPI values, table numerics, IDs). Without this, proportional digits
+     wiggle column widths. */
+  .tabular {
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  /* Fraunces with optical size set high so it doesn't look childish at
+     display sizes; with subtle softness for warmth. */
+  .font-display {
+    font-family: 'Fraunces', Georgia, serif;
+    font-variation-settings: 'opsz' 144, 'SOFT' 50;
+  }
+}
+
+/* Subtle scrollbar — warmer than default */
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-thumb { background: #d6d3d1; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #a8a29e; }
+
+/* Hairline borders look more refined than 1px solid in many browsers. */
+.border-hairline { border-width: 0.5px; }

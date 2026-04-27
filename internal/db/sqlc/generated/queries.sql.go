@@ -11,6 +11,85 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const addContactsToList = `-- name: AddContactsToList :exec
+INSERT INTO contact_list_members (list_id, contact_id)
+SELECT $1::bigint, c.id
+FROM contacts c
+WHERE c.tenant_id = $2 AND c.id = ANY($3::bigint[])
+ON CONFLICT DO NOTHING
+`
+
+type AddContactsToListParams struct {
+	Column1    int64
+	TenantID   int64
+	ContactIds []int64
+}
+
+func (q *Queries) AddContactsToList(ctx context.Context, arg AddContactsToListParams) error {
+	_, err := q.db.Exec(ctx, addContactsToList, arg.Column1, arg.TenantID, arg.ContactIds)
+	return err
+}
+
+const adminMessagesTimeBucketed = `-- name: AdminMessagesTimeBucketed :many
+
+SELECT
+    (date_trunc($1::text, created_at))::timestamptz AS ts,
+    COUNT(*)                                       AS total,
+    COUNT(*) FILTER (WHERE status = 'delivered')   AS delivered,
+    COUNT(*) FILTER (WHERE status IN ('rejected','failed','undelivered')) AS failed
+FROM messages
+WHERE ($2::bigint IS NULL OR tenant_id = $2::bigint)
+  AND created_at >= $3
+  AND created_at <  $4
+GROUP BY ts
+ORDER BY ts
+`
+
+type AdminMessagesTimeBucketedParams struct {
+	Bucket   string
+	TenantID *int64
+	FromTime pgtype.Timestamptz
+	ToTime   pgtype.Timestamptz
+}
+
+type AdminMessagesTimeBucketedRow struct {
+	Ts        pgtype.Timestamptz
+	Total     int64
+	Delivered int64
+	Failed    int64
+}
+
+// ===== reports =====
+func (q *Queries) AdminMessagesTimeBucketed(ctx context.Context, arg AdminMessagesTimeBucketedParams) ([]AdminMessagesTimeBucketedRow, error) {
+	rows, err := q.db.Query(ctx, adminMessagesTimeBucketed,
+		arg.Bucket,
+		arg.TenantID,
+		arg.FromTime,
+		arg.ToTime,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminMessagesTimeBucketedRow
+	for rows.Next() {
+		var i AdminMessagesTimeBucketedRow
+		if err := rows.Scan(
+			&i.Ts,
+			&i.Total,
+			&i.Delivered,
+			&i.Failed,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const adminStatsByTenant = `-- name: AdminStatsByTenant :many
 SELECT t.id, t.name, COUNT(m.*) AS total,
        COUNT(*) FILTER (WHERE m.status = 'delivered')                  AS delivered,
@@ -213,6 +292,57 @@ func (q *Queries) AdminStatsTotals(ctx context.Context, createdAt pgtype.Timesta
 	return i, err
 }
 
+const adminTopRecipients = `-- name: AdminTopRecipients :many
+SELECT recipient,
+       COUNT(*)                                       AS total,
+       COUNT(*) FILTER (WHERE status = 'delivered')   AS delivered
+FROM messages
+WHERE tenant_id = $1
+  AND created_at >= $2
+  AND created_at <  $3
+GROUP BY recipient
+ORDER BY total DESC
+LIMIT $4
+`
+
+type AdminTopRecipientsParams struct {
+	TenantID int64
+	FromTime pgtype.Timestamptz
+	ToTime   pgtype.Timestamptz
+	Lim      int32
+}
+
+type AdminTopRecipientsRow struct {
+	Recipient string
+	Total     int64
+	Delivered int64
+}
+
+func (q *Queries) AdminTopRecipients(ctx context.Context, arg AdminTopRecipientsParams) ([]AdminTopRecipientsRow, error) {
+	rows, err := q.db.Query(ctx, adminTopRecipients,
+		arg.TenantID,
+		arg.FromTime,
+		arg.ToTime,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminTopRecipientsRow
+	for rows.Next() {
+		var i AdminTopRecipientsRow
+		if err := rows.Scan(&i.Recipient, &i.Total, &i.Delivered); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const appendAuditLog = `-- name: AppendAuditLog :exec
 INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)
 VALUES ($1, $2, $3, $4, $5)
@@ -400,6 +530,26 @@ func (q *Queries) CountAdminUsers(ctx context.Context) (int64, error) {
 	return count, err
 }
 
+const countContactsByTenant = `-- name: CountContactsByTenant :one
+SELECT
+    COUNT(*)                              AS total,
+    COUNT(*) FILTER (WHERE opt_out)       AS opted_out
+FROM contacts
+WHERE tenant_id = $1
+`
+
+type CountContactsByTenantRow struct {
+	Total    int64
+	OptedOut int64
+}
+
+func (q *Queries) CountContactsByTenant(ctx context.Context, tenantID int64) (CountContactsByTenantRow, error) {
+	row := q.db.QueryRow(ctx, countContactsByTenant, tenantID)
+	var i CountContactsByTenantRow
+	err := row.Scan(&i.Total, &i.OptedOut)
+	return i, err
+}
+
 const createAPIKey = `-- name: CreateAPIKey :one
 INSERT INTO api_keys (tenant_id, prefix, hash, name)
 VALUES ($1, $2, $3, $4)
@@ -456,6 +606,73 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const createContact = `-- name: CreateContact :one
+
+INSERT INTO contacts (tenant_id, msisdn, name, notes, metadata)
+VALUES ($1, $2, $3, $4, COALESCE($5, '{}')::jsonb)
+RETURNING id, tenant_id, msisdn, name, notes, opt_out, opt_out_at, metadata, created_at, updated_at
+`
+
+type CreateContactParams struct {
+	TenantID int64
+	Msisdn   string
+	Name     *string
+	Notes    *string
+	Column5  []byte
+}
+
+// ===== contacts =====
+func (q *Queries) CreateContact(ctx context.Context, arg CreateContactParams) (Contact, error) {
+	row := q.db.QueryRow(ctx, createContact,
+		arg.TenantID,
+		arg.Msisdn,
+		arg.Name,
+		arg.Notes,
+		arg.Column5,
+	)
+	var i Contact
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Msisdn,
+		&i.Name,
+		&i.Notes,
+		&i.OptOut,
+		&i.OptOutAt,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const createContactList = `-- name: CreateContactList :one
+
+INSERT INTO contact_lists (tenant_id, name, description)
+VALUES ($1, $2, $3)
+RETURNING id, tenant_id, name, description, created_at
+`
+
+type CreateContactListParams struct {
+	TenantID    int64
+	Name        string
+	Description *string
+}
+
+// ===== contact_lists =====
+func (q *Queries) CreateContactList(ctx context.Context, arg CreateContactListParams) (ContactList, error) {
+	row := q.db.QueryRow(ctx, createContactList, arg.TenantID, arg.Name, arg.Description)
+	var i ContactList
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Name,
+		&i.Description,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -679,6 +896,34 @@ func (q *Queries) CreateWebhookEndpoint(ctx context.Context, arg CreateWebhookEn
 	return i, err
 }
 
+const deleteContact = `-- name: DeleteContact :exec
+DELETE FROM contacts WHERE id = $1 AND tenant_id = $2
+`
+
+type DeleteContactParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) DeleteContact(ctx context.Context, arg DeleteContactParams) error {
+	_, err := q.db.Exec(ctx, deleteContact, arg.ID, arg.TenantID)
+	return err
+}
+
+const deleteContactList = `-- name: DeleteContactList :exec
+DELETE FROM contact_lists WHERE id = $1 AND tenant_id = $2
+`
+
+type DeleteContactListParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) DeleteContactList(ctx context.Context, arg DeleteContactListParams) error {
+	_, err := q.db.Exec(ctx, deleteContactList, arg.ID, arg.TenantID)
+	return err
+}
+
 const deleteInboundNumber = `-- name: DeleteInboundNumber :exec
 DELETE FROM inbound_numbers WHERE msisdn = $1
 `
@@ -785,6 +1030,33 @@ func (q *Queries) GetAdminUserByEmail(ctx context.Context, email string) (AdminU
 		&i.PasswordHash,
 		&i.Role,
 		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getContact = `-- name: GetContact :one
+SELECT id, tenant_id, msisdn, name, notes, opt_out, opt_out_at, metadata, created_at, updated_at FROM contacts WHERE id = $1 AND tenant_id = $2
+`
+
+type GetContactParams struct {
+	ID       int64
+	TenantID int64
+}
+
+func (q *Queries) GetContact(ctx context.Context, arg GetContactParams) (Contact, error) {
+	row := q.db.QueryRow(ctx, getContact, arg.ID, arg.TenantID)
+	var i Contact
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Msisdn,
+		&i.Name,
+		&i.Notes,
+		&i.OptOut,
+		&i.OptOutAt,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
@@ -1057,6 +1329,112 @@ func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
 			&i.PasswordHash,
 			&i.Role,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listContactLists = `-- name: ListContactLists :many
+SELECT cl.id, cl.tenant_id, cl.name, cl.description, cl.created_at, COUNT(clm.contact_id)::bigint AS member_count
+FROM contact_lists cl
+LEFT JOIN contact_list_members clm ON clm.list_id = cl.id
+WHERE cl.tenant_id = $1
+GROUP BY cl.id
+ORDER BY cl.name
+`
+
+type ListContactListsRow struct {
+	ID          int64
+	TenantID    int64
+	Name        string
+	Description *string
+	CreatedAt   pgtype.Timestamptz
+	MemberCount int64
+}
+
+func (q *Queries) ListContactLists(ctx context.Context, tenantID int64) ([]ListContactListsRow, error) {
+	rows, err := q.db.Query(ctx, listContactLists, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListContactListsRow
+	for rows.Next() {
+		var i ListContactListsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedAt,
+			&i.MemberCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listContacts = `-- name: ListContacts :many
+SELECT id, tenant_id, msisdn, name, notes, opt_out, opt_out_at, metadata, created_at, updated_at FROM contacts
+WHERE tenant_id = $1
+  AND ($2::bigint = 0 OR id < $2::bigint)
+  AND ($3::text IS NULL
+       OR msisdn ILIKE '%' || $3::text || '%'
+       OR coalesce(name,'') ILIKE '%' || $3::text || '%')
+  AND ($4::boolean IS NULL OR opt_out = $4::boolean)
+  AND ($5::bigint IS NULL
+       OR id IN (SELECT contact_id FROM contact_list_members WHERE list_id = $5::bigint))
+ORDER BY id DESC
+LIMIT $6
+`
+
+type ListContactsParams struct {
+	TenantID int64
+	CursorID int64
+	Q        *string
+	OptOut   *bool
+	ListID   *int64
+	Lim      int32
+}
+
+func (q *Queries) ListContacts(ctx context.Context, arg ListContactsParams) ([]Contact, error) {
+	rows, err := q.db.Query(ctx, listContacts,
+		arg.TenantID,
+		arg.CursorID,
+		arg.Q,
+		arg.OptOut,
+		arg.ListID,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Contact
+	for rows.Next() {
+		var i Contact
+		if err := rows.Scan(
+			&i.ID,
+			&i.TenantID,
+			&i.Msisdn,
+			&i.Name,
+			&i.Notes,
+			&i.OptOut,
+			&i.OptOutAt,
+			&i.Metadata,
+			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1717,6 +2095,21 @@ func (q *Queries) RecoverStaleWebhookDeliveries(ctx context.Context, claimedAt p
 	return err
 }
 
+const removeContactFromList = `-- name: RemoveContactFromList :exec
+DELETE FROM contact_list_members
+WHERE list_id = $1 AND contact_id = $2
+`
+
+type RemoveContactFromListParams struct {
+	ListID    int64
+	ContactID int64
+}
+
+func (q *Queries) RemoveContactFromList(ctx context.Context, arg RemoveContactFromListParams) error {
+	_, err := q.db.Exec(ctx, removeContactFromList, arg.ListID, arg.ContactID)
+	return err
+}
+
 const requeueWebhookDelivery = `-- name: RequeueWebhookDelivery :exec
 UPDATE webhook_deliveries
 SET status = 'pending',
@@ -1739,6 +2132,23 @@ UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 
 func (q *Queries) RevokeAPIKey(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, revokeAPIKey, id)
+	return err
+}
+
+const setContactOptOut = `-- name: SetContactOptOut :exec
+UPDATE contacts SET opt_out = $3, opt_out_at = CASE WHEN $3 THEN now() ELSE NULL END,
+                    updated_at = now()
+WHERE id = $1 AND tenant_id = $2
+`
+
+type SetContactOptOutParams struct {
+	ID       int64
+	TenantID int64
+	OptOut   bool
+}
+
+func (q *Queries) SetContactOptOut(ctx context.Context, arg SetContactOptOutParams) error {
+	_, err := q.db.Exec(ctx, setContactOptOut, arg.ID, arg.TenantID, arg.OptOut)
 	return err
 }
 
@@ -1778,4 +2188,46 @@ UPDATE api_keys SET last_used_at = now() WHERE id = $1
 func (q *Queries) TouchAPIKey(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, touchAPIKey, id)
 	return err
+}
+
+const upsertContact = `-- name: UpsertContact :one
+INSERT INTO contacts (tenant_id, msisdn, name, notes, metadata)
+VALUES ($1, $2, $3, $4, COALESCE($5, '{}')::jsonb)
+ON CONFLICT (tenant_id, msisdn) DO UPDATE
+SET name      = COALESCE(EXCLUDED.name, contacts.name),
+    notes     = COALESCE(EXCLUDED.notes, contacts.notes),
+    updated_at = now()
+RETURNING id, tenant_id, msisdn, name, notes, opt_out, opt_out_at, metadata, created_at, updated_at
+`
+
+type UpsertContactParams struct {
+	TenantID int64
+	Msisdn   string
+	Name     *string
+	Notes    *string
+	Column5  []byte
+}
+
+func (q *Queries) UpsertContact(ctx context.Context, arg UpsertContactParams) (Contact, error) {
+	row := q.db.QueryRow(ctx, upsertContact,
+		arg.TenantID,
+		arg.Msisdn,
+		arg.Name,
+		arg.Notes,
+		arg.Column5,
+	)
+	var i Contact
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Msisdn,
+		&i.Name,
+		&i.Notes,
+		&i.OptOut,
+		&i.OptOutAt,
+		&i.Metadata,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

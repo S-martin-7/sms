@@ -130,3 +130,34 @@ CREATE TABLE events (
 );
 CREATE INDEX idx_events_tenant_id ON events(tenant_id, id DESC);
 CREATE INDEX idx_events_tenant_type_id ON events(tenant_id, type, id DESC);
+
+CREATE TABLE contacts (
+    id            BIGSERIAL PRIMARY KEY,
+    tenant_id     BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    msisdn        TEXT NOT NULL,
+    name          TEXT,
+    notes         TEXT,
+    opt_out       BOOLEAN NOT NULL DEFAULT false,
+    opt_out_at    TIMESTAMPTZ,
+    metadata      JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, msisdn)
+);
+CREATE INDEX idx_contacts_tenant ON contacts(tenant_id, msisdn);
+
+CREATE TABLE contact_lists (
+    id            BIGSERIAL PRIMARY KEY,
+    tenant_id     BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+    name          TEXT NOT NULL,
+    description   TEXT,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, name)
+);
+
+CREATE TABLE contact_list_members (
+    list_id       BIGINT NOT NULL REFERENCES contact_lists(id) ON DELETE CASCADE,
+    contact_id    BIGINT NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+    added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (list_id, contact_id)
+);

@@ -378,3 +378,106 @@ WHERE status IN ('failed','dead')
   AND created_at >= $1
 ORDER BY created_at DESC
 LIMIT $2;
+
+-- ===== contacts =====
+
+-- name: CreateContact :one
+INSERT INTO contacts (tenant_id, msisdn, name, notes, metadata)
+VALUES ($1, $2, $3, $4, COALESCE($5, '{}')::jsonb)
+RETURNING *;
+
+-- name: UpsertContact :one
+INSERT INTO contacts (tenant_id, msisdn, name, notes, metadata)
+VALUES ($1, $2, $3, $4, COALESCE($5, '{}')::jsonb)
+ON CONFLICT (tenant_id, msisdn) DO UPDATE
+SET name      = COALESCE(EXCLUDED.name, contacts.name),
+    notes     = COALESCE(EXCLUDED.notes, contacts.notes),
+    updated_at = now()
+RETURNING *;
+
+-- name: GetContact :one
+SELECT * FROM contacts WHERE id = $1 AND tenant_id = $2;
+
+-- name: ListContacts :many
+SELECT * FROM contacts
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND (sqlc.arg(cursor_id)::bigint = 0 OR id < sqlc.arg(cursor_id)::bigint)
+  AND (sqlc.narg(q)::text IS NULL
+       OR msisdn ILIKE '%' || sqlc.narg(q)::text || '%'
+       OR coalesce(name,'') ILIKE '%' || sqlc.narg(q)::text || '%')
+  AND (sqlc.narg(opt_out)::boolean IS NULL OR opt_out = sqlc.narg(opt_out)::boolean)
+  AND (sqlc.narg(list_id)::bigint IS NULL
+       OR id IN (SELECT contact_id FROM contact_list_members WHERE list_id = sqlc.narg(list_id)::bigint))
+ORDER BY id DESC
+LIMIT sqlc.arg(lim);
+
+-- name: CountContactsByTenant :one
+SELECT
+    COUNT(*)                              AS total,
+    COUNT(*) FILTER (WHERE opt_out)       AS opted_out
+FROM contacts
+WHERE tenant_id = $1;
+
+-- name: SetContactOptOut :exec
+UPDATE contacts SET opt_out = $3, opt_out_at = CASE WHEN $3 THEN now() ELSE NULL END,
+                    updated_at = now()
+WHERE id = $1 AND tenant_id = $2;
+
+-- name: DeleteContact :exec
+DELETE FROM contacts WHERE id = $1 AND tenant_id = $2;
+
+-- ===== contact_lists =====
+
+-- name: CreateContactList :one
+INSERT INTO contact_lists (tenant_id, name, description)
+VALUES ($1, $2, $3)
+RETURNING *;
+
+-- name: ListContactLists :many
+SELECT cl.*, COUNT(clm.contact_id)::bigint AS member_count
+FROM contact_lists cl
+LEFT JOIN contact_list_members clm ON clm.list_id = cl.id
+WHERE cl.tenant_id = $1
+GROUP BY cl.id
+ORDER BY cl.name;
+
+-- name: DeleteContactList :exec
+DELETE FROM contact_lists WHERE id = $1 AND tenant_id = $2;
+
+-- name: AddContactsToList :exec
+INSERT INTO contact_list_members (list_id, contact_id)
+SELECT $1::bigint, c.id
+FROM contacts c
+WHERE c.tenant_id = $2 AND c.id = ANY(sqlc.arg(contact_ids)::bigint[])
+ON CONFLICT DO NOTHING;
+
+-- name: RemoveContactFromList :exec
+DELETE FROM contact_list_members
+WHERE list_id = $1 AND contact_id = $2;
+
+-- ===== reports =====
+
+-- name: AdminMessagesTimeBucketed :many
+SELECT
+    (date_trunc(sqlc.arg(bucket)::text, created_at))::timestamptz AS ts,
+    COUNT(*)                                       AS total,
+    COUNT(*) FILTER (WHERE status = 'delivered')   AS delivered,
+    COUNT(*) FILTER (WHERE status IN ('rejected','failed','undelivered')) AS failed
+FROM messages
+WHERE (sqlc.narg(tenant_id)::bigint IS NULL OR tenant_id = sqlc.narg(tenant_id)::bigint)
+  AND created_at >= sqlc.arg(from_time)
+  AND created_at <  sqlc.arg(to_time)
+GROUP BY ts
+ORDER BY ts;
+
+-- name: AdminTopRecipients :many
+SELECT recipient,
+       COUNT(*)                                       AS total,
+       COUNT(*) FILTER (WHERE status = 'delivered')   AS delivered
+FROM messages
+WHERE tenant_id = sqlc.arg(tenant_id)
+  AND created_at >= sqlc.arg(from_time)
+  AND created_at <  sqlc.arg(to_time)
+GROUP BY recipient
+ORDER BY total DESC
+LIMIT sqlc.arg(lim);
