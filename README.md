@@ -4,7 +4,12 @@ Multi-tenant SMS gateway built on top of the [Horisen SMS HTTP API](https://deve
 
 ## Status
 
-**Planning phase.** See `docs/PLAN.md` for the full architecture and build sequence.
+**Live in production** at `https://sms.aipanel.cl`. Customers integrate via `/v1/sms` with an API key.
+
+- Customer-facing API reference → [`docs/api-public.md`](docs/api-public.md)
+- Working examples (Python, Node, PHP, Bash, webhook servers) → [`docs/ejemplos/`](docs/ejemplos/)
+- Superadmin onboarding guide → [`docs/onboarding-tenant.md`](docs/onboarding-tenant.md)
+- Original architecture plan (historical) → [`docs/PLAN.md`](docs/PLAN.md)
 
 ## Highlights
 
@@ -17,9 +22,12 @@ Multi-tenant SMS gateway built on top of the [Horisen SMS HTTP API](https://deve
 
 ## Quick links
 
-- Architecture & plan → `docs/PLAN.md`
-- Public API reference → `docs/api-public.md` *(TBD)*
-- Webhook payload & HMAC verification → `docs/webhooks.md` *(TBD)*
+- [Public API reference](docs/api-public.md) — auth, endpoints, errors, webhooks, examples
+- [Examples](docs/ejemplos/) — runnable Python/Node/PHP/Bash clients + webhook servers
+- [Tenant onboarding](docs/onboarding-tenant.md) — superadmin runbook
+- [Security model](docs/SECURITY.md)
+- [Horisen DLR code mapping](docs/horisen-dlr-codes.md)
+- [Architecture plan (historical)](docs/PLAN.md)
 
 ## Layout (target)
 
