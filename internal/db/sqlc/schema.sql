@@ -27,6 +27,11 @@ CREATE TABLE admin_users (
   email           TEXT UNIQUE NOT NULL,
   password_hash   TEXT NOT NULL,
   role            TEXT NOT NULL,
+  failed_attempts INT NOT NULL DEFAULT 0,
+  locked_until    TIMESTAMPTZ,
+  totp_secret     TEXT,
+  totp_enabled    BOOLEAN NOT NULL DEFAULT false,
+  last_login_at   TIMESTAMPTZ,
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

@@ -127,6 +127,8 @@ func main() {
 		HorisenCallbackPass:   cfg.HorisenCallbackPass,
 		HorisenCallbackSecret: cfg.HorisenCallbackSecret,
 		Logger:                &log,
+		SMSPerTenantTPS:       cfg.SMSPerTenantTPS,
+		SMSPerTenantBurst:     cfg.SMSPerTenantBurst,
 	})
 
 	srv := &http.Server{

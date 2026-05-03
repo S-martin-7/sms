@@ -411,6 +411,33 @@ func (q *Queries) ApplyDLR(ctx context.Context, arg ApplyDLRParams) (ApplyDLRRow
 	return i, err
 }
 
+const bumpAdminFailedAttempts = `-- name: BumpAdminFailedAttempts :one
+UPDATE admin_users
+SET failed_attempts = failed_attempts + 1,
+    locked_until    = CASE
+        WHEN failed_attempts + 1 >= 5
+        THEN now() + interval '15 minutes'
+        ELSE locked_until
+    END
+WHERE id = $1
+RETURNING failed_attempts, locked_until
+`
+
+type BumpAdminFailedAttemptsRow struct {
+	FailedAttempts int32
+	LockedUntil    pgtype.Timestamptz
+}
+
+// BumpAdminFailedAttempts increments the bad-login counter and locks the
+// account for 15 minutes once we hit 5 in a row. Single statement so the
+// check + update are atomic under credential-stuffing concurrency.
+func (q *Queries) BumpAdminFailedAttempts(ctx context.Context, id int64) (BumpAdminFailedAttemptsRow, error) {
+	row := q.db.QueryRow(ctx, bumpAdminFailedAttempts, id)
+	var i BumpAdminFailedAttemptsRow
+	err := row.Scan(&i.FailedAttempts, &i.LockedUntil)
+	return i, err
+}
+
 const bumpMessageRetry = `-- name: BumpMessageRetry :exec
 UPDATE messages
 SET status = 'queued',
@@ -630,7 +657,7 @@ func (q *Queries) CreateAPIKey(ctx context.Context, arg CreateAPIKeyParams) (Api
 const createAdminUser = `-- name: CreateAdminUser :one
 INSERT INTO admin_users (email, password_hash, role)
 VALUES ($1, $2, $3)
-RETURNING id, email, password_hash, role, created_at
+RETURNING id, email, password_hash, role, failed_attempts, locked_until, totp_secret, totp_enabled, last_login_at, created_at
 `
 
 type CreateAdminUserParams struct {
@@ -647,6 +674,11 @@ func (q *Queries) CreateAdminUser(ctx context.Context, arg CreateAdminUserParams
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.FailedAttempts,
+		&i.LockedUntil,
+		&i.TotpSecret,
+		&i.TotpEnabled,
+		&i.LastLoginAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -1143,8 +1175,39 @@ func (q *Queries) GetAPIKeyByPrefix(ctx context.Context, prefix string) (ApiKey,
 	return i, err
 }
 
+const getAPIKeyWithTenantStatus = `-- name: GetAPIKeyWithTenantStatus :one
+SELECT k.id, k.tenant_id, k.hash, k.revoked_at, t.status AS tenant_status
+FROM api_keys k
+JOIN tenants t ON t.id = k.tenant_id
+WHERE k.prefix = $1
+`
+
+type GetAPIKeyWithTenantStatusRow struct {
+	ID           int64
+	TenantID     int64
+	Hash         string
+	RevokedAt    pgtype.Timestamptz
+	TenantStatus string
+}
+
+// GetAPIKeyWithTenantStatus joins api_keys × tenants so the auth path can
+// both verify the key AND short-circuit on suspended tenants in a single
+// round trip.
+func (q *Queries) GetAPIKeyWithTenantStatus(ctx context.Context, prefix string) (GetAPIKeyWithTenantStatusRow, error) {
+	row := q.db.QueryRow(ctx, getAPIKeyWithTenantStatus, prefix)
+	var i GetAPIKeyWithTenantStatusRow
+	err := row.Scan(
+		&i.ID,
+		&i.TenantID,
+		&i.Hash,
+		&i.RevokedAt,
+		&i.TenantStatus,
+	)
+	return i, err
+}
+
 const getAdminUserByEmail = `-- name: GetAdminUserByEmail :one
-SELECT id, email, password_hash, role, created_at FROM admin_users WHERE email = $1
+SELECT id, email, password_hash, role, failed_attempts, locked_until, totp_secret, totp_enabled, last_login_at, created_at FROM admin_users WHERE email = $1
 `
 
 func (q *Queries) GetAdminUserByEmail(ctx context.Context, email string) (AdminUser, error) {
@@ -1155,6 +1218,33 @@ func (q *Queries) GetAdminUserByEmail(ctx context.Context, email string) (AdminU
 		&i.Email,
 		&i.PasswordHash,
 		&i.Role,
+		&i.FailedAttempts,
+		&i.LockedUntil,
+		&i.TotpSecret,
+		&i.TotpEnabled,
+		&i.LastLoginAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getAdminUserByID = `-- name: GetAdminUserByID :one
+SELECT id, email, password_hash, role, failed_attempts, locked_until, totp_secret, totp_enabled, last_login_at, created_at FROM admin_users WHERE id = $1
+`
+
+func (q *Queries) GetAdminUserByID(ctx context.Context, id int64) (AdminUser, error) {
+	row := q.db.QueryRow(ctx, getAdminUserByID, id)
+	var i AdminUser
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.PasswordHash,
+		&i.Role,
+		&i.FailedAttempts,
+		&i.LockedUntil,
+		&i.TotpSecret,
+		&i.TotpEnabled,
+		&i.LastLoginAt,
 		&i.CreatedAt,
 	)
 	return i, err
@@ -1507,7 +1597,7 @@ func (q *Queries) ListActiveEndpointsForEvent(ctx context.Context, arg ListActiv
 }
 
 const listAdminUsers = `-- name: ListAdminUsers :many
-SELECT id, email, password_hash, role, created_at FROM admin_users ORDER BY id
+SELECT id, email, password_hash, role, failed_attempts, locked_until, totp_secret, totp_enabled, last_login_at, created_at FROM admin_users ORDER BY id
 `
 
 func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
@@ -1524,6 +1614,11 @@ func (q *Queries) ListAdminUsers(ctx context.Context) ([]AdminUser, error) {
 			&i.Email,
 			&i.PasswordHash,
 			&i.Role,
+			&i.FailedAttempts,
+			&i.LockedUntil,
+			&i.TotpSecret,
+			&i.TotpEnabled,
+			&i.LastLoginAt,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -2425,12 +2520,62 @@ func (q *Queries) RequeueWebhookDelivery(ctx context.Context, id int64) error {
 	return err
 }
 
+const resetAdminLoginState = `-- name: ResetAdminLoginState :exec
+UPDATE admin_users
+SET failed_attempts = 0,
+    locked_until    = NULL,
+    last_login_at   = now()
+WHERE id = $1
+`
+
+func (q *Queries) ResetAdminLoginState(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, resetAdminLoginState, id)
+	return err
+}
+
 const revokeAPIKey = `-- name: RevokeAPIKey :exec
 UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL
 `
 
 func (q *Queries) RevokeAPIKey(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, revokeAPIKey, id)
+	return err
+}
+
+const setAdminTOTPEnabled = `-- name: SetAdminTOTPEnabled :exec
+UPDATE admin_users
+SET totp_enabled = $2,
+    totp_secret  = CASE WHEN $2 THEN totp_secret ELSE NULL END
+WHERE id = $1
+`
+
+type SetAdminTOTPEnabledParams struct {
+	ID          int64
+	TotpEnabled bool
+}
+
+// SetAdminTOTPEnabled flips totp_enabled. When disabling, the secret is
+// also cleared so a re-enroll must start fresh.
+func (q *Queries) SetAdminTOTPEnabled(ctx context.Context, arg SetAdminTOTPEnabledParams) error {
+	_, err := q.db.Exec(ctx, setAdminTOTPEnabled, arg.ID, arg.TotpEnabled)
+	return err
+}
+
+const setAdminTOTPSecret = `-- name: SetAdminTOTPSecret :exec
+UPDATE admin_users
+SET totp_secret = $2
+WHERE id = $1
+`
+
+type SetAdminTOTPSecretParams struct {
+	ID         int64
+	TotpSecret *string
+}
+
+// SetAdminTOTPSecret stores a freshly generated secret without flipping
+// totp_enabled — the user must prove the secret with a valid code first.
+func (q *Queries) SetAdminTOTPSecret(ctx context.Context, arg SetAdminTOTPSecretParams) error {
+	_, err := q.db.Exec(ctx, setAdminTOTPSecret, arg.ID, arg.TotpSecret)
 	return err
 }
 

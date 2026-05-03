@@ -37,11 +37,63 @@ RETURNING *;
 -- name: GetAdminUserByEmail :one
 SELECT * FROM admin_users WHERE email = $1;
 
+-- name: GetAdminUserByID :one
+SELECT * FROM admin_users WHERE id = $1;
+
 -- name: ListAdminUsers :many
 SELECT * FROM admin_users ORDER BY id;
 
 -- name: CountAdminUsers :one
 SELECT COUNT(*) FROM admin_users;
+
+-- BumpAdminFailedAttempts increments the bad-login counter and locks the
+-- account for 15 minutes once we hit 5 in a row. Single statement so the
+-- check + update are atomic under credential-stuffing concurrency.
+--
+-- name: BumpAdminFailedAttempts :one
+UPDATE admin_users
+SET failed_attempts = failed_attempts + 1,
+    locked_until    = CASE
+        WHEN failed_attempts + 1 >= 5
+        THEN now() + interval '15 minutes'
+        ELSE locked_until
+    END
+WHERE id = $1
+RETURNING failed_attempts, locked_until;
+
+-- name: ResetAdminLoginState :exec
+UPDATE admin_users
+SET failed_attempts = 0,
+    locked_until    = NULL,
+    last_login_at   = now()
+WHERE id = $1;
+
+-- SetAdminTOTPSecret stores a freshly generated secret without flipping
+-- totp_enabled — the user must prove the secret with a valid code first.
+--
+-- name: SetAdminTOTPSecret :exec
+UPDATE admin_users
+SET totp_secret = $2
+WHERE id = $1;
+
+-- SetAdminTOTPEnabled flips totp_enabled. When disabling, the secret is
+-- also cleared so a re-enroll must start fresh.
+--
+-- name: SetAdminTOTPEnabled :exec
+UPDATE admin_users
+SET totp_enabled = $2,
+    totp_secret  = CASE WHEN $2 THEN totp_secret ELSE NULL END
+WHERE id = $1;
+
+-- GetAPIKeyWithTenantStatus joins api_keys × tenants so the auth path can
+-- both verify the key AND short-circuit on suspended tenants in a single
+-- round trip.
+--
+-- name: GetAPIKeyWithTenantStatus :one
+SELECT k.id, k.tenant_id, k.hash, k.revoked_at, t.status AS tenant_status
+FROM api_keys k
+JOIN tenants t ON t.id = k.tenant_id
+WHERE k.prefix = $1;
 
 -- name: AppendAuditLog :exec
 INSERT INTO audit_log (actor_id, action, target_type, target_id, metadata)

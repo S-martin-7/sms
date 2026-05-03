@@ -59,3 +59,34 @@ func TestAPIKey_VerifyMalformed(t *testing.T) {
 		t.Errorf("err = %v, want ErrAPIKeyInvalid", err)
 	}
 }
+
+// TestAPIKey_VerifySuspendedTenant verifies that even a valid, unrevoked
+// key fails when its tenant has been suspended — the join in
+// GetAPIKeyWithTenantStatus is what enforces this.
+func TestAPIKey_VerifySuspendedTenant(t *testing.T) {
+	pool := db.WithTestDB(t)
+	svc := tenancy.NewService(pool)
+	ctx := context.Background()
+
+	tt, _ := svc.CreateTenant(ctx, tenancy.CreateTenantInput{Name: "ToSuspend"})
+	issued, _ := svc.IssueAPIKey(ctx, tt.ID, "k", pepper)
+
+	// Sanity: works when active.
+	if _, err := svc.VerifyAPIKey(ctx, issued.Token, pepper); err != nil {
+		t.Fatalf("active verify: %v", err)
+	}
+
+	// Suspend → key must now bounce.
+	if err := svc.SetStatus(ctx, tt.ID, "suspended"); err != nil {
+		t.Fatalf("suspend: %v", err)
+	}
+	if _, err := svc.VerifyAPIKey(ctx, issued.Token, pepper); err != tenancy.ErrTenantSuspended {
+		t.Errorf("suspended verify err = %v, want ErrTenantSuspended", err)
+	}
+
+	// Reactivating restores access.
+	_ = svc.SetStatus(ctx, tt.ID, "active")
+	if _, err := svc.VerifyAPIKey(ctx, issued.Token, pepper); err != nil {
+		t.Errorf("reactivated verify: %v", err)
+	}
+}

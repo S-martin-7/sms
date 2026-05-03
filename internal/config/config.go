@@ -38,6 +38,12 @@ type Config struct {
 	HorisenOAuthTokenURL     string
 	HorisenBalanceURL        string
 	BalanceCacheSeconds      int
+
+	// Per-tenant rate limit on POST /v1/sms* (token-bucket). Default
+	// 5 req/s / burst 10 is half the global Horisen TPS, leaving room
+	// for at least one other tenant to make progress.
+	SMSPerTenantTPS   float64
+	SMSPerTenantBurst int
 }
 
 func Load() (*Config, error) {
@@ -68,6 +74,8 @@ func Load() (*Config, error) {
 	cfg.HorisenOAuthTokenURL = os.Getenv("HORISEN_OAUTH_TOKEN_URL")
 	cfg.HorisenBalanceURL = os.Getenv("HORISEN_BALANCE_URL")
 	cfg.BalanceCacheSeconds = envInt("BALANCE_CACHE_SECONDS", 60)
+	cfg.SMSPerTenantTPS = envFloat("SMS_PER_TENANT_TPS", 5)
+	cfg.SMSPerTenantBurst = envInt("SMS_PER_TENANT_BURST", 10)
 
 	var missing []string
 	if cfg.DatabaseURL == "" {
@@ -112,4 +120,16 @@ func envInt(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func envFloat(key string, def float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }

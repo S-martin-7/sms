@@ -58,7 +58,9 @@ func (s *Service) VerifyAPIKey(ctx context.Context, token, pepper string) (int64
 	if !ok {
 		return 0, ErrAPIKeyInvalid
 	}
-	row, err := s.q.GetAPIKeyByPrefix(ctx, prefix)
+	// One round trip joins api_keys × tenants so we can short-circuit on
+	// suspended tenants without re-querying.
+	row, err := s.q.GetAPIKeyWithTenantStatus(ctx, prefix)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrAPIKeyNotFound
 	}
@@ -70,6 +72,9 @@ func (s *Service) VerifyAPIKey(ctx context.Context, token, pepper string) (int64
 	}
 	if !auth.VerifyToken(token, row.Hash, pepper) {
 		return 0, ErrAPIKeyInvalid
+	}
+	if row.TenantStatus != "active" {
+		return 0, ErrTenantSuspended
 	}
 	go func(id int64) {
 		ctxT, cancel := context.WithTimeout(context.Background(), 2*time.Second)

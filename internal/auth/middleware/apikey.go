@@ -22,6 +22,9 @@ func APIKey(svc *tenancy.Service, pepper string) func(http.Handler) http.Handler
 			tenantID, err := svc.VerifyAPIKey(r.Context(), token, pepper)
 			if err != nil {
 				switch {
+				case errors.Is(err, tenancy.ErrTenantSuspended):
+					httpx.WriteError(w, http.StatusForbidden, "tenant_suspended",
+						"tenant account is suspended; contact support")
 				case errors.Is(err, tenancy.ErrAPIKeyInvalid),
 					errors.Is(err, tenancy.ErrAPIKeyNotFound),
 					errors.Is(err, tenancy.ErrAPIKeyRevoked):

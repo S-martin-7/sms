@@ -94,6 +94,8 @@ function SidebarContent({ onClose }: { onClose: () => void }) {
         <NavLink to="/clientes" className={linkClass}>Clientes</NavLink>
         <div className={SECTION_LABEL}>Auditoría</div>
         <NavLink to="/mensajes" className={linkClass}>Mensajes (todos)</NavLink>
+        <div className={SECTION_LABEL}>Cuenta</div>
+        <NavLink to="/cuenta" className={linkClass}>Mi cuenta · 2FA</NavLink>
       </nav>
       <div className="mt-auto px-3 pb-4">
         <div className="rounded-md border border-border bg-canvas px-3 py-2 text-xs text-ink-mute">

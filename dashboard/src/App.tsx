@@ -7,6 +7,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { OverviewPage } from '@/pages/OverviewPage'
 import { TenantsPage } from '@/pages/TenantsPage'
 import { MessagesPage } from '@/pages/MessagesPage'
+import { SettingsPage } from '@/pages/SettingsPage'
 import { NotFoundPage } from '@/pages/NotFoundPage'
 import { TenantOverviewPage } from '@/pages/tenant/TenantOverviewPage'
 import { TenantSendPage } from '@/pages/tenant/TenantSendPage'
@@ -37,6 +38,7 @@ export default function App() {
             <Route path="/resumen" element={<OverviewPage />} />
             <Route path="/clientes" element={<TenantsPage />} />
             <Route path="/mensajes" element={<MessagesPage />} />
+            <Route path="/cuenta" element={<SettingsPage />} />
             <Route path="/" element={<Navigate to="/resumen" replace />} />
           </Route>
 

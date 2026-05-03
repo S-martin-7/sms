@@ -5,6 +5,7 @@ import type { LoginResponse } from '@/api/types'
 interface LoginInput {
   email: string
   password: string
+  totp_code?: string
 }
 
 export function useLogin() {

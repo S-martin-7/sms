@@ -31,6 +31,11 @@ type RouterDeps struct {
 	HorisenCallbackPass   string
 	HorisenCallbackSecret string // for ?sig= query-string auth (legacy / Horisen default)
 	Logger                *zerolog.Logger
+
+	// Per-tenant token-bucket on POST /v1/sms{,/bulk}. Default
+	// 5 req/s / burst 10 — see config.SMSPerTenant*.
+	SMSPerTenantTPS   float64
+	SMSPerTenantBurst int
 }
 
 // NewRouter mounts /admin/login, /v1/ping, /v1/sms* and /v1/horisen/* routes.
@@ -62,6 +67,12 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/admin/messages", AdminListMessagesHandler(d.SMSSvc))
 		r.Get("/admin/stats", AdminStatsHandler(d.Pool))
 
+		// Calling admin's own profile + 2FA enrollment.
+		r.Get("/admin/me", MeHandler(d.AdminSvc))
+		r.Post("/admin/me/totp/setup", TOTPSetupHandler(d.AdminSvc))
+		r.Post("/admin/me/totp/enable", TOTPEnableHandler(d.AdminSvc))
+		r.Post("/admin/me/totp/disable", TOTPDisableHandler(d.AdminSvc))
+
 		r.Get("/admin/tenants/{id}/webhooks", AdminListEndpointsForTenantHandler(d.WebhooksSvc))
 		r.Get("/admin/tenants/{id}/webhook-deliveries", AdminListDeliveriesHandler(d.WebhooksSvc))
 		r.Post("/admin/webhook-deliveries/{id}/retry", AdminRetryDeliveryHandler(d.WebhooksSvc, d.AdminSvc))
@@ -92,11 +103,14 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Delete("/admin/scheduled/{id}", AdminDeleteScheduledHandler(d.Pool, d.AdminSvc))
 	})
 
+	tenantSMSLimiter := httpx.NewTenantSMSLimiter(d.SMSPerTenantTPS, d.SMSPerTenantBurst)
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.APIKey(d.TenancySvc, d.APIKeyPepper))
 		r.Get("/v1/ping", PingHandler())
-		r.Post("/v1/sms", SendSMSHandler(d.SMSSvc))
-		r.Post("/v1/sms/bulk", SendBulkSMSHandler(d.SMSSvc))
+		// Send paths get the per-tenant token bucket on top of the
+		// API-key middleware. GETs are cheap, no need to throttle here.
+		r.With(tenantSMSLimiter.Wrap).Post("/v1/sms", SendSMSHandler(d.SMSSvc))
+		r.With(tenantSMSLimiter.Wrap).Post("/v1/sms/bulk", SendBulkSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms", ListSMSHandler(d.SMSSvc))
 		r.Get("/v1/sms/{id}", GetSMSHandler(d.SMSSvc))
 		r.Get("/v1/events", ListEventsHandler(d.EventsSvc))

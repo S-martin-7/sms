@@ -9,11 +9,16 @@ import (
 )
 
 type AdminUser struct {
-	ID           int64
-	Email        string
-	PasswordHash string
-	Role         string
-	CreatedAt    pgtype.Timestamptz
+	ID             int64
+	Email          string
+	PasswordHash   string
+	Role           string
+	FailedAttempts int32
+	LockedUntil    pgtype.Timestamptz
+	TotpSecret     *string
+	TotpEnabled    bool
+	LastLoginAt    pgtype.Timestamptz
+	CreatedAt      pgtype.Timestamptz
 }
 
 type ApiKey struct {
