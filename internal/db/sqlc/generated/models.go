@@ -143,13 +143,14 @@ type ScheduledSend struct {
 }
 
 type Tenant struct {
-	ID            int64
-	Name          string
-	Status        string
-	DailySmsLimit *int32
-	MonthlyBudget pgtype.Numeric
-	CreatedAt     pgtype.Timestamptz
-	UpdatedAt     pgtype.Timestamptz
+	ID             int64
+	Name           string
+	Status         string
+	DailySmsLimit  *int32
+	MonthlyBudget  pgtype.Numeric
+	AllowedSenders []string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
 }
 
 type WebhookDelivery struct {

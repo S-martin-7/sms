@@ -12,6 +12,30 @@ SELECT * FROM tenants ORDER BY id;
 -- name: SetTenantStatus :exec
 UPDATE tenants SET status = $2, updated_at = now() WHERE id = $1;
 
+-- name: SetTenantAllowedSenders :exec
+UPDATE tenants
+SET allowed_senders = sqlc.arg(senders)::text[],
+    updated_at = now()
+WHERE id = sqlc.arg(id)::bigint;
+
+-- GetTenantSendPolicy combines the two send-time guards (daily quota + sender
+-- allow-list) into one round trip. `since` is the "start of today" timestamp
+-- the caller computes (so the timezone choice is application-side).
+--
+-- name: GetTenantSendPolicy :one
+SELECT
+    t.daily_sms_limit,
+    t.allowed_senders,
+    (
+        SELECT COUNT(*)
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= sqlc.arg(since)::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    )::bigint AS sent_today
+FROM tenants t
+WHERE t.id = sqlc.arg(tenant_id)::bigint;
+
 -- name: CreateAPIKey :one
 INSERT INTO api_keys (tenant_id, prefix, hash, name)
 VALUES ($1, $2, $3, $4)

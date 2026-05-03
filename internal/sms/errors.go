@@ -8,4 +8,7 @@ var (
 	ErrInvalidDLR         = errors.New("sms: invalid DLR payload")
 	ErrDLRMessageNotFound = errors.New("sms: DLR refers to unknown message")
 	ErrInvalidMO          = errors.New("sms: invalid MO payload")
+	ErrDailyQuotaExceeded = errors.New("sms: daily quota exceeded")
+	ErrSenderNotAllowed   = errors.New("sms: sender not in tenant allow-list")
+	ErrTenantNotFound     = errors.New("sms: tenant not found")
 )

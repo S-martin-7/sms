@@ -4,6 +4,7 @@ CREATE TABLE tenants (
   status          TEXT NOT NULL DEFAULT 'active',
   daily_sms_limit INT,
   monthly_budget  NUMERIC(12,4),
+  allowed_senders TEXT[] NOT NULL DEFAULT '{}',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );

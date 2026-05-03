@@ -981,7 +981,7 @@ func (q *Queries) CreateScheduledSend(ctx context.Context, arg CreateScheduledSe
 const createTenant = `-- name: CreateTenant :one
 INSERT INTO tenants (name, daily_sms_limit, monthly_budget)
 VALUES ($1, $2, $3)
-RETURNING id, name, status, daily_sms_limit, monthly_budget, created_at, updated_at
+RETURNING id, name, status, daily_sms_limit, monthly_budget, allowed_senders, created_at, updated_at
 `
 
 type CreateTenantParams struct {
@@ -999,6 +999,7 @@ func (q *Queries) CreateTenant(ctx context.Context, arg CreateTenantParams) (Ten
 		&i.Status,
 		&i.DailySmsLimit,
 		&i.MonthlyBudget,
+		&i.AllowedSenders,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
@@ -1448,7 +1449,7 @@ func (q *Queries) GetScheduledSend(ctx context.Context, arg GetScheduledSendPara
 }
 
 const getTenantByID = `-- name: GetTenantByID :one
-SELECT id, name, status, daily_sms_limit, monthly_budget, created_at, updated_at FROM tenants WHERE id = $1
+SELECT id, name, status, daily_sms_limit, monthly_budget, allowed_senders, created_at, updated_at FROM tenants WHERE id = $1
 `
 
 func (q *Queries) GetTenantByID(ctx context.Context, id int64) (Tenant, error) {
@@ -1460,9 +1461,46 @@ func (q *Queries) GetTenantByID(ctx context.Context, id int64) (Tenant, error) {
 		&i.Status,
 		&i.DailySmsLimit,
 		&i.MonthlyBudget,
+		&i.AllowedSenders,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
+	return i, err
+}
+
+const getTenantSendPolicy = `-- name: GetTenantSendPolicy :one
+SELECT
+    t.daily_sms_limit,
+    t.allowed_senders,
+    (
+        SELECT COUNT(*)
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= $1::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    )::bigint AS sent_today
+FROM tenants t
+WHERE t.id = $2::bigint
+`
+
+type GetTenantSendPolicyParams struct {
+	Since    pgtype.Timestamptz
+	TenantID int64
+}
+
+type GetTenantSendPolicyRow struct {
+	DailySmsLimit  *int32
+	AllowedSenders []string
+	SentToday      int64
+}
+
+// GetTenantSendPolicy combines the two send-time guards (daily quota + sender
+// allow-list) into one round trip. `since` is the "start of today" timestamp
+// the caller computes (so the timezone choice is application-side).
+func (q *Queries) GetTenantSendPolicy(ctx context.Context, arg GetTenantSendPolicyParams) (GetTenantSendPolicyRow, error) {
+	row := q.db.QueryRow(ctx, getTenantSendPolicy, arg.Since, arg.TenantID)
+	var i GetTenantSendPolicyRow
+	err := row.Scan(&i.DailySmsLimit, &i.AllowedSenders, &i.SentToday)
 	return i, err
 }
 
@@ -2202,7 +2240,7 @@ func (q *Queries) ListScheduledSends(ctx context.Context, arg ListScheduledSends
 }
 
 const listTenants = `-- name: ListTenants :many
-SELECT id, name, status, daily_sms_limit, monthly_budget, created_at, updated_at FROM tenants ORDER BY id
+SELECT id, name, status, daily_sms_limit, monthly_budget, allowed_senders, created_at, updated_at FROM tenants ORDER BY id
 `
 
 func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
@@ -2220,6 +2258,7 @@ func (q *Queries) ListTenants(ctx context.Context) ([]Tenant, error) {
 			&i.Status,
 			&i.DailySmsLimit,
 			&i.MonthlyBudget,
+			&i.AllowedSenders,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
@@ -2609,6 +2648,23 @@ type SetScheduledSendStatusParams struct {
 
 func (q *Queries) SetScheduledSendStatus(ctx context.Context, arg SetScheduledSendStatusParams) error {
 	_, err := q.db.Exec(ctx, setScheduledSendStatus, arg.ID, arg.TenantID, arg.Status)
+	return err
+}
+
+const setTenantAllowedSenders = `-- name: SetTenantAllowedSenders :exec
+UPDATE tenants
+SET allowed_senders = $1::text[],
+    updated_at = now()
+WHERE id = $2::bigint
+`
+
+type SetTenantAllowedSendersParams struct {
+	Senders []string
+	ID      int64
+}
+
+func (q *Queries) SetTenantAllowedSenders(ctx context.Context, arg SetTenantAllowedSendersParams) error {
+	_, err := q.db.Exec(ctx, setTenantAllowedSenders, arg.Senders, arg.ID)
 	return err
 }
 

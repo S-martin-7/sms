@@ -236,6 +236,10 @@ func bulkErrorCode(err error) string {
 	switch {
 	case errors.Is(err, sms.ErrDuplicateClientRef):
 		return "duplicate_client_ref"
+	case errors.Is(err, sms.ErrDailyQuotaExceeded):
+		return "daily_quota_exceeded"
+	case errors.Is(err, sms.ErrSenderNotAllowed):
+		return "sender_not_allowed"
 	default:
 		return "bad_request"
 	}
@@ -296,11 +300,19 @@ func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 			ClientRef: in.ClientRef,
 		})
 		if err != nil {
-			if errors.Is(err, sms.ErrDuplicateClientRef) {
+			switch {
+			case errors.Is(err, sms.ErrDuplicateClientRef):
 				httpx.WriteError(w, http.StatusConflict, "duplicate_client_ref", "client_ref already used")
-				return
+			case errors.Is(err, sms.ErrDailyQuotaExceeded):
+				w.Header().Set("Retry-After", strconv.Itoa(sms.SecondsUntilEndOfDayCLT(time.Now())))
+				httpx.WriteError(w, http.StatusTooManyRequests, "daily_quota_exceeded",
+					"daily SMS quota exceeded; resets at midnight America/Santiago")
+			case errors.Is(err, sms.ErrSenderNotAllowed):
+				httpx.WriteError(w, http.StatusForbidden, "sender_not_allowed",
+					"sender is not in this tenant's allow-list")
+			default:
+				httpx.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 			}
-			httpx.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
 		httpx.WriteJSON(w, http.StatusAccepted, toResp(msg))

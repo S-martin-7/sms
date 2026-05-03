@@ -59,6 +59,7 @@ func NewRouter(d RouterDeps) http.Handler {
 		r.Get("/admin/tenants/{id}", AdminGetTenantHandler(d.TenancySvc))
 		r.Post("/admin/tenants/{id}/suspend", AdminSetTenantStatusHandler(d.TenancySvc, d.AdminSvc, "suspended"))
 		r.Post("/admin/tenants/{id}/activate", AdminSetTenantStatusHandler(d.TenancySvc, d.AdminSvc, "active"))
+		r.Put("/admin/tenants/{id}/allowed-senders", AdminSetTenantAllowedSendersHandler(d.TenancySvc, d.AdminSvc))
 
 		r.Get("/admin/tenants/{id}/api-keys", AdminListAPIKeysHandler(d.TenancySvc))
 		r.Post("/admin/tenants/{id}/api-keys", AdminIssueAPIKeyHandler(d.TenancySvc, d.AdminSvc, d.APIKeyPepper))

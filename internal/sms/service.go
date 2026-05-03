@@ -69,6 +69,13 @@ func NewService(pool *pgxpool.Pool) *Service {
 
 // Enqueue validates the input, detects the DCS, counts parts and inserts
 // a `queued` row. The outbox worker will pick it up and call Horisen.
+//
+// Pre-insert guards:
+//   - daily_sms_limit (per-tenant): rejects with ErrDailyQuotaExceeded if
+//     today's count already meets the limit. Today is defined by the
+//     America/Santiago timezone — invoices and SMS rates are billed in CLP.
+//   - allowed_senders (per-tenant): if the array is non-empty, the sender
+//     must be one of the entries verbatim. Empty array = no restriction.
 func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (*Message, error) {
 	if in.TenantID == 0 {
 		return nil, fmt.Errorf("tenant_id required")
@@ -78,6 +85,25 @@ func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (*Message, error
 	if in.Sender == "" || in.Recipient == "" || in.Text == "" {
 		return nil, fmt.Errorf("sender, to and text are required")
 	}
+
+	// One round trip: tenant policy + today's count.
+	policy, err := s.q.GetTenantSendPolicy(ctx, sqlcgen.GetTenantSendPolicyParams{
+		TenantID: in.TenantID,
+		Since:    pgtype.Timestamptz{Time: startOfDayCLT(time.Now()), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrTenantNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load tenant policy: %w", err)
+	}
+	if policy.DailySmsLimit != nil && policy.SentToday >= int64(*policy.DailySmsLimit) {
+		return nil, ErrDailyQuotaExceeded
+	}
+	if len(policy.AllowedSenders) > 0 && !containsString(policy.AllowedSenders, in.Sender) {
+		return nil, ErrSenderNotAllowed
+	}
+
 	dcs := horisen.DetectDCS(in.Text)
 	parts := horisen.NumParts(in.Text, dcs)
 
@@ -266,6 +292,46 @@ func (s *Service) GetForTenant(ctx context.Context, id uuid.UUID, tenantID int64
 		return nil, fmt.Errorf("get message: %w", err)
 	}
 	return fromRow(row), nil
+}
+
+// startOfDayCLT is midnight in America/Santiago for the day containing t.
+// Falls back to UTC if the tzdata is missing (shouldn't happen on Ubuntu
+// with tzdata installed). The daily quota window is intentionally a
+// civil-day boundary, not a rolling 24h window — easier to reason about
+// for billing.
+func startOfDayCLT(t time.Time) time.Time {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		loc = time.UTC
+	}
+	tt := t.In(loc)
+	return time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, loc)
+}
+
+// SecondsUntilEndOfDayCLT returns how many seconds until the start of
+// tomorrow in America/Santiago — used by the handler to set Retry-After
+// when the daily quota is hit.
+func SecondsUntilEndOfDayCLT(now time.Time) int {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		loc = time.UTC
+	}
+	nn := now.In(loc)
+	tomorrow := time.Date(nn.Year(), nn.Month(), nn.Day(), 0, 0, 0, 0, loc).Add(24 * time.Hour)
+	d := tomorrow.Sub(nn)
+	if d < 0 {
+		return 0
+	}
+	return int(d.Seconds())
+}
+
+func containsString(xs []string, v string) bool {
+	for _, x := range xs {
+		if x == v {
+			return true
+		}
+	}
+	return false
 }
 
 func fromRow(r sqlcgen.Message) *Message {

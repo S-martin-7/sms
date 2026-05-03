@@ -14,22 +14,28 @@ import (
 )
 
 type adminTenantResp struct {
-	ID            int64     `json:"id"`
-	Name          string    `json:"name"`
-	Status        string    `json:"status"`
-	DailySMSLimit *int32    `json:"daily_sms_limit,omitempty"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	Status         string    `json:"status"`
+	DailySMSLimit  *int32    `json:"daily_sms_limit,omitempty"`
+	AllowedSenders []string  `json:"allowed_senders"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func toAdminTenantResp(t *tenancy.Tenant) adminTenantResp {
+	senders := t.AllowedSenders
+	if senders == nil {
+		senders = []string{}
+	}
 	return adminTenantResp{
-		ID:            t.ID,
-		Name:          t.Name,
-		Status:        t.Status,
-		DailySMSLimit: t.DailySMSLimit,
-		CreatedAt:     t.CreatedAt,
-		UpdatedAt:     t.UpdatedAt,
+		ID:             t.ID,
+		Name:           t.Name,
+		Status:         t.Status,
+		DailySMSLimit:  t.DailySMSLimit,
+		AllowedSenders: senders,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
 	}
 }
 
@@ -115,6 +121,35 @@ func AdminSetTenantStatusHandler(svc *tenancy.Service, audit *admin.Service, tar
 		}
 		_ = audit.LogAction(r.Context(), httpx.AdminIDFrom(r.Context()),
 			"tenant."+target, "tenant", strconv.FormatInt(id, 10), nil)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// AdminSetTenantAllowedSendersHandler — PUT /admin/tenants/{id}/allowed-senders
+// Body: {"allowed_senders": ["Segtelco", "AcmeAlerts"]}
+// Empty array (or omitted) clears the list → no restriction.
+func AdminSetTenantAllowedSendersHandler(svc *tenancy.Service, audit *admin.Service) http.HandlerFunc {
+	type req struct {
+		AllowedSenders []string `json:"allowed_senders"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		id, ok := parseInt64URLParam(r, "id")
+		if !ok {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid id")
+			return
+		}
+		var in req
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid json")
+			return
+		}
+		if err := svc.SetAllowedSenders(r.Context(), id, in.AllowedSenders); err != nil {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+		_ = audit.LogAction(r.Context(), httpx.AdminIDFrom(r.Context()),
+			"tenant.allowed_senders.set", "tenant", strconv.FormatInt(id, 10),
+			map[string]any{"senders": in.AllowedSenders})
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
