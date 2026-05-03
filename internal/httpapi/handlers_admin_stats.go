@@ -160,6 +160,80 @@ func AdminStatsHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
+type adminQuotaRow struct {
+	TenantID    int64   `json:"tenant_id"`
+	Name        string  `json:"name"`
+	Limit       int32   `json:"daily_sms_limit"`
+	SentToday   int64   `json:"sent_today"`
+	Remaining   int64   `json:"remaining"`
+	PercentUsed float64 `json:"percent_used"`
+}
+
+type adminQuotaResp struct {
+	WindowStart time.Time       `json:"window_start"`
+	Tenants     []adminQuotaRow `json:"tenants"`
+}
+
+// AdminQuotaUsageHandler — GET /admin/stats/quota
+//
+// Returns every active tenant that has a daily_sms_limit set, sorted by
+// percent of quota used (DESC), so admins immediately see who's near or
+// over their cap. Tenants with NULL limit are excluded — they're
+// "unlimited" and don't produce useful rows here.
+func AdminQuotaUsageHandler(pool *pgxpool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		q := sqlcgen.New(pool)
+		// Use the same start-of-day-CLT helper the send guard uses, so
+		// both stay in sync. The tz boundary is what matters for billing,
+		// not the wall clock.
+		start := startOfDayCLT(time.Now())
+		rows, err := q.AdminQuotaUsageToday(r.Context(), pgtype.Timestamptz{Time: start, Valid: true})
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal", err.Error())
+			return
+		}
+		out := adminQuotaResp{
+			WindowStart: start,
+			Tenants:     make([]adminQuotaRow, 0, len(rows)),
+		}
+		for _, row := range rows {
+			limit := int32(0)
+			if row.DailySmsLimit != nil {
+				limit = *row.DailySmsLimit
+			}
+			remaining := int64(limit) - row.SentToday
+			if remaining < 0 {
+				remaining = 0
+			}
+			pct := 0.0
+			if limit > 0 {
+				pct = float64(row.SentToday) / float64(limit) * 100
+			}
+			out.Tenants = append(out.Tenants, adminQuotaRow{
+				TenantID:    row.ID,
+				Name:        row.Name,
+				Limit:       limit,
+				SentToday:   row.SentToday,
+				Remaining:   remaining,
+				PercentUsed: pct,
+			})
+		}
+		httpx.WriteJSON(w, http.StatusOK, out)
+	}
+}
+
+// startOfDayCLT mirrors sms.startOfDayCLT — same boundary used by the
+// send-time guard, so both stay aligned. Kept local to avoid pulling
+// internal/sms into the admin stats handler for a 5-line helper.
+func startOfDayCLT(t time.Time) time.Time {
+	loc, err := time.LoadLocation("America/Santiago")
+	if err != nil {
+		loc = time.UTC
+	}
+	tt := t.In(loc)
+	return time.Date(tt.Year(), tt.Month(), tt.Day(), 0, 0, 0, 0, loc)
+}
+
 // uuidString formats a pgtype.UUID as the standard 8-4-4-4-12 hex form.
 // (Repeated from internal/webhooks for now — small enough not to extract.)
 func uuidString(u pgtype.UUID) string {

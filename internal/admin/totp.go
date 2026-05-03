@@ -93,6 +93,33 @@ func (s *Service) DisableTOTP(ctx context.Context, adminID int64, code string) e
 	})
 }
 
+// AdminResetTOTPAndLockout is the superadmin escape hatch: clears the
+// target admin's TOTP enrollment and any active lockout. Used when a
+// user loses their authenticator app or a lockout needs manual override.
+// The caller is responsible for verifying the actor's role first.
+func (s *Service) AdminResetTOTPAndLockout(ctx context.Context, targetID int64) error {
+	// Confirm target exists so we surface a friendly 404 instead of a
+	// silent no-op UPDATE.
+	if _, err := s.getAdminByID(ctx, targetID); err != nil {
+		return err
+	}
+	return s.q.ResetAdminTOTPAndLockout(ctx, targetID)
+}
+
+// ListAdmins returns the full admin user table sorted by id. Used by the
+// superadmin recovery UI so they can pick which account to reset.
+func (s *Service) ListAdmins(ctx context.Context) ([]*User, error) {
+	rows, err := s.q.ListAdminUsers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*User, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, userFromRow(r))
+	}
+	return out, nil
+}
+
 func (s *Service) getAdminByID(ctx context.Context, id int64) (sqlcgen.AdminUser, error) {
 	row, err := s.q.GetAdminUserByID(ctx, id)
 	if errors.Is(err, pgx.ErrNoRows) {

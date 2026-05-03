@@ -101,6 +101,76 @@ func TOTPEnableHandler(svc *admin.Service) http.HandlerFunc {
 	}
 }
 
+// AdminResetTOTPHandler — POST /admin/users/{id}/totp/reset.
+//
+// Superadmin-only escape hatch for an admin who lost their authenticator.
+// Clears totp_enabled, totp_secret, failed_attempts, locked_until — the
+// target user can log in with password only, then re-enroll from /cuenta.
+//
+// Why role-gated: any admin with a valid JWT could otherwise wipe another
+// admin's 2FA. Limiting it to superadmin reduces blast radius.
+func AdminResetTOTPHandler(svc *admin.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		actorID := httpx.AdminIDFrom(r.Context())
+		role := httpx.AdminRoleFrom(r.Context())
+		if role != "superadmin" {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden",
+				"only superadmin can reset another admin's 2FA")
+			return
+		}
+		targetID, ok := parseInt64URLParam(r, "id")
+		if !ok {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request", "invalid id")
+			return
+		}
+		if targetID == actorID {
+			httpx.WriteError(w, http.StatusBadRequest, "bad_request",
+				"use /admin/me/totp/disable for self-reset")
+			return
+		}
+		if err := svc.AdminResetTOTPAndLockout(r.Context(), targetID); err != nil {
+			if errors.Is(err, admin.ErrAdminNotFound) {
+				httpx.WriteError(w, http.StatusNotFound, "not_found", "admin not found")
+				return
+			}
+			httpx.WriteError(w, http.StatusInternalServerError, "internal", "reset failed")
+			return
+		}
+		_ = svc.LogAction(r.Context(), actorID, "admin.totp_reset", "admin_user",
+			strconv.FormatInt(targetID, 10), nil)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// AdminListAdminsHandler — GET /admin/users (superadmin only).
+// Returns the admin roster so the superadmin recovery UI knows which id
+// to target for /admin/users/{id}/totp/reset.
+func AdminListAdminsHandler(svc *admin.Service) http.HandlerFunc {
+	type item struct {
+		ID          int64  `json:"id"`
+		Email       string `json:"email"`
+		Role        string `json:"role"`
+		TOTPEnabled bool   `json:"totp_enabled"`
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if httpx.AdminRoleFrom(r.Context()) != "superadmin" {
+			httpx.WriteError(w, http.StatusForbidden, "forbidden",
+				"superadmin role required")
+			return
+		}
+		users, err := svc.ListAdmins(r.Context())
+		if err != nil {
+			httpx.WriteError(w, http.StatusInternalServerError, "internal", "list failed")
+			return
+		}
+		out := make([]item, 0, len(users))
+		for _, u := range users {
+			out = append(out, item{ID: u.ID, Email: u.Email, Role: u.Role, TOTPEnabled: u.TOTPEnabled})
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"users": out})
+	}
+}
+
 // TOTPDisableHandler turns 2FA off after verifying a current code.
 // Lost-authenticator recovery is intentionally NOT supported here —
 // it must be done by a superadmin via a future reset endpoint to

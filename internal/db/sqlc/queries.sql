@@ -36,6 +36,47 @@ SELECT
 FROM tenants t
 WHERE t.id = sqlc.arg(tenant_id)::bigint;
 
+-- AdminQuotaUsageToday is the cross-tenant snapshot used by
+-- GET /admin/stats/quota. Lists all active tenants WITH a daily_sms_limit
+-- set, sorted by usage % DESC so the admin dashboard can surface the
+-- ones closest to (or over) their cap first.
+--
+-- name: AdminQuotaUsageToday :many
+SELECT
+    t.id,
+    t.name,
+    t.daily_sms_limit,
+    (
+        SELECT COUNT(*)
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= sqlc.arg(since)::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    )::bigint AS sent_today
+FROM tenants t
+WHERE t.status = 'active'
+  AND t.daily_sms_limit IS NOT NULL
+ORDER BY
+    (
+        SELECT COUNT(*)::float8
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= sqlc.arg(since)::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    ) / GREATEST(t.daily_sms_limit, 1)::float8 DESC,
+    t.name ASC;
+
+-- HasAuditLogSinceForTarget is used to make "tenant crossed 80% of quota"
+-- audit entries idempotent — we only log it once per day per tenant.
+--
+-- name: HasAuditLogSinceForTarget :one
+SELECT EXISTS (
+    SELECT 1 FROM audit_log
+    WHERE action = sqlc.arg(action)::text
+      AND target_id = sqlc.arg(target_id)::text
+      AND created_at >= sqlc.arg(since)::timestamptz
+)::boolean AS has_log;
+
 -- name: CreateAPIKey :one
 INSERT INTO api_keys (tenant_id, prefix, hash, name)
 VALUES ($1, $2, $3, $4)
@@ -90,6 +131,19 @@ UPDATE admin_users
 SET failed_attempts = 0,
     locked_until    = NULL,
     last_login_at   = now()
+WHERE id = $1;
+
+-- ResetAdminTOTPAndLockout is the superadmin recovery hammer: clears
+-- TOTP enrollment AND any active lockout. Used by
+-- POST /admin/users/{id}/totp/reset when an admin loses their
+-- authenticator app.
+--
+-- name: ResetAdminTOTPAndLockout :exec
+UPDATE admin_users
+SET totp_enabled    = false,
+    totp_secret     = NULL,
+    failed_attempts = 0,
+    locked_until    = NULL
 WHERE id = $1;
 
 -- SetAdminTOTPSecret stores a freshly generated secret without flipping

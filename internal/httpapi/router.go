@@ -67,12 +67,17 @@ func NewRouter(d RouterDeps) http.Handler {
 
 		r.Get("/admin/messages", AdminListMessagesHandler(d.SMSSvc))
 		r.Get("/admin/stats", AdminStatsHandler(d.Pool))
+		r.Get("/admin/stats/quota", AdminQuotaUsageHandler(d.Pool))
 
 		// Calling admin's own profile + 2FA enrollment.
 		r.Get("/admin/me", MeHandler(d.AdminSvc))
 		r.Post("/admin/me/totp/setup", TOTPSetupHandler(d.AdminSvc))
 		r.Post("/admin/me/totp/enable", TOTPEnableHandler(d.AdminSvc))
 		r.Post("/admin/me/totp/disable", TOTPDisableHandler(d.AdminSvc))
+
+		// Superadmin escape hatch: list admins + reset another admin's 2FA.
+		r.Get("/admin/users", AdminListAdminsHandler(d.AdminSvc))
+		r.Post("/admin/users/{id}/totp/reset", AdminResetTOTPHandler(d.AdminSvc))
 
 		r.Get("/admin/tenants/{id}/webhooks", AdminListEndpointsForTenantHandler(d.WebhooksSvc))
 		r.Get("/admin/tenants/{id}/webhook-deliveries", AdminListDeliveriesHandler(d.WebhooksSvc))

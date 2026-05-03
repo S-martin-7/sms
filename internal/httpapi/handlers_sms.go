@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -304,6 +305,7 @@ func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 			case errors.Is(err, sms.ErrDuplicateClientRef):
 				httpx.WriteError(w, http.StatusConflict, "duplicate_client_ref", "client_ref already used")
 			case errors.Is(err, sms.ErrDailyQuotaExceeded):
+				writeQuotaHeaders(w, svc, r.Context(), tenantID)
 				w.Header().Set("Retry-After", strconv.Itoa(sms.SecondsUntilEndOfDayCLT(time.Now())))
 				httpx.WriteError(w, http.StatusTooManyRequests, "daily_quota_exceeded",
 					"daily SMS quota exceeded; resets at midnight America/Santiago")
@@ -315,8 +317,28 @@ func SendSMSHandler(svc *sms.Service) http.HandlerFunc {
 			}
 			return
 		}
+		writeQuotaHeaders(w, svc, r.Context(), tenantID)
 		httpx.WriteJSON(w, http.StatusAccepted, toResp(msg))
 	}
+}
+
+// writeQuotaHeaders sets X-Daily-Quota-{Limit,Used,Remaining} on the
+// response if the tenant has a daily_sms_limit configured. No-op when
+// the tenant has unlimited quota (NULL limit) — clients get the silence
+// they expect for unlimited setups.
+func writeQuotaHeaders(w http.ResponseWriter, svc *sms.Service, ctx context.Context, tenantID int64) {
+	p, err := svc.LoadTenantPolicy(ctx, tenantID)
+	if err != nil || p.DailyLimit == nil {
+		return
+	}
+	limit := int64(*p.DailyLimit)
+	remaining := limit - p.SentToday
+	if remaining < 0 {
+		remaining = 0
+	}
+	w.Header().Set("X-Daily-Quota-Limit", strconv.FormatInt(limit, 10))
+	w.Header().Set("X-Daily-Quota-Used", strconv.FormatInt(p.SentToday, 10))
+	w.Header().Set("X-Daily-Quota-Remaining", strconv.FormatInt(remaining, 10))
 }
 
 // validSMSStatuses are the values we accept on `?status=` for /v1/sms.

@@ -90,6 +90,68 @@ func (q *Queries) AdminMessagesTimeBucketed(ctx context.Context, arg AdminMessag
 	return items, nil
 }
 
+const adminQuotaUsageToday = `-- name: AdminQuotaUsageToday :many
+SELECT
+    t.id,
+    t.name,
+    t.daily_sms_limit,
+    (
+        SELECT COUNT(*)
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= $1::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    )::bigint AS sent_today
+FROM tenants t
+WHERE t.status = 'active'
+  AND t.daily_sms_limit IS NOT NULL
+ORDER BY
+    (
+        SELECT COUNT(*)::float8
+        FROM messages m
+        WHERE m.tenant_id = t.id
+          AND m.created_at >= $1::timestamptz
+          AND m.status NOT IN ('rejected','failed')
+    ) / GREATEST(t.daily_sms_limit, 1)::float8 DESC,
+    t.name ASC
+`
+
+type AdminQuotaUsageTodayRow struct {
+	ID            int64
+	Name          string
+	DailySmsLimit *int32
+	SentToday     int64
+}
+
+// AdminQuotaUsageToday is the cross-tenant snapshot used by
+// GET /admin/stats/quota. Lists all active tenants WITH a daily_sms_limit
+// set, sorted by usage % DESC so the admin dashboard can surface the
+// ones closest to (or over) their cap first.
+func (q *Queries) AdminQuotaUsageToday(ctx context.Context, since pgtype.Timestamptz) ([]AdminQuotaUsageTodayRow, error) {
+	rows, err := q.db.Query(ctx, adminQuotaUsageToday, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminQuotaUsageTodayRow
+	for rows.Next() {
+		var i AdminQuotaUsageTodayRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.DailySmsLimit,
+			&i.SentToday,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const adminStatsByTenant = `-- name: AdminStatsByTenant :many
 SELECT t.id, t.name, COUNT(m.*) AS total,
        COUNT(*) FILTER (WHERE m.status = 'delivered')                  AS delivered,
@@ -1557,6 +1619,30 @@ func (q *Queries) GetWebhookEndpoint(ctx context.Context, arg GetWebhookEndpoint
 	return i, err
 }
 
+const hasAuditLogSinceForTarget = `-- name: HasAuditLogSinceForTarget :one
+SELECT EXISTS (
+    SELECT 1 FROM audit_log
+    WHERE action = $1::text
+      AND target_id = $2::text
+      AND created_at >= $3::timestamptz
+)::boolean AS has_log
+`
+
+type HasAuditLogSinceForTargetParams struct {
+	Action   string
+	TargetID string
+	Since    pgtype.Timestamptz
+}
+
+// HasAuditLogSinceForTarget is used to make "tenant crossed 80% of quota"
+// audit entries idempotent — we only log it once per day per tenant.
+func (q *Queries) HasAuditLogSinceForTarget(ctx context.Context, arg HasAuditLogSinceForTargetParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasAuditLogSinceForTarget, arg.Action, arg.TargetID, arg.Since)
+	var has_log bool
+	err := row.Scan(&has_log)
+	return has_log, err
+}
+
 const listAPIKeysByTenant = `-- name: ListAPIKeysByTenant :many
 SELECT id, tenant_id, prefix, hash, hash_algo, name, scopes, last_used_at, revoked_at, created_at FROM api_keys WHERE tenant_id = $1 ORDER BY id DESC
 `
@@ -2569,6 +2655,24 @@ WHERE id = $1
 
 func (q *Queries) ResetAdminLoginState(ctx context.Context, id int64) error {
 	_, err := q.db.Exec(ctx, resetAdminLoginState, id)
+	return err
+}
+
+const resetAdminTOTPAndLockout = `-- name: ResetAdminTOTPAndLockout :exec
+UPDATE admin_users
+SET totp_enabled    = false,
+    totp_secret     = NULL,
+    failed_attempts = 0,
+    locked_until    = NULL
+WHERE id = $1
+`
+
+// ResetAdminTOTPAndLockout is the superadmin recovery hammer: clears
+// TOTP enrollment AND any active lockout. Used by
+// POST /admin/users/{id}/totp/reset when an admin loses their
+// authenticator app.
+func (q *Queries) ResetAdminTOTPAndLockout(ctx context.Context, id int64) error {
+	_, err := q.db.Exec(ctx, resetAdminTOTPAndLockout, id)
 	return err
 }
 

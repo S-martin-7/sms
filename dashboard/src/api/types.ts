@@ -11,6 +11,7 @@ export interface Tenant {
   name: string
   status: string                    // "active" | "suspended"
   daily_sms_limit?: number | null
+  allowed_senders: string[]
   created_at: string
   updated_at: string
 }

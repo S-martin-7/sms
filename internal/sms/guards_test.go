@@ -8,6 +8,7 @@ import (
 	"github.com/S-martin-7/sms/internal/db"
 	"github.com/S-martin-7/sms/internal/sms"
 	"github.com/S-martin-7/sms/internal/tenancy"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // Test_DailyQuota_Enforced creates a tenant with daily_sms_limit=2,
@@ -102,6 +103,63 @@ func Test_SenderAllowList_EmptyMeansAny(t *testing.T) {
 	}); err != nil {
 		t.Errorf("empty allow-list should accept any sender: %v", err)
 	}
+}
+
+// Test_QuotaWarning_AuditOnce80 ensures crossing the 80% threshold
+// produces exactly one tenant.quota_warning audit row, even if more
+// sends happen after.
+func Test_QuotaWarning_AuditOnce80(t *testing.T) {
+	pool := db.WithTestDB(t)
+	ts := tenancy.NewService(pool)
+	limit := int32(10)
+	tt, _ := ts.CreateTenant(context.Background(), tenancy.CreateTenantInput{
+		Name: "QuotaWarn", DailySMSLimit: &limit,
+	})
+	svc := sms.NewService(pool)
+	ctx := context.Background()
+
+	// 7 sends → still under 80% (threshold = ceil(0.8*10) = 8).
+	for i := 0; i < 7; i++ {
+		_, _ = svc.Enqueue(ctx, sms.EnqueueInput{
+			TenantID: tt.ID, Sender: "S",
+			Recipient: "5697700000" + strconv.Itoa(i), Text: "x",
+		})
+	}
+	count := countQuotaWarnings(t, pool, tt.ID)
+	if count != 0 {
+		t.Errorf("after 7 sends, audit count = %d, want 0", count)
+	}
+
+	// 8th send crosses threshold → should log once.
+	_, _ = svc.Enqueue(ctx, sms.EnqueueInput{
+		TenantID: tt.ID, Sender: "S", Recipient: "56977000017", Text: "x",
+	})
+	count = countQuotaWarnings(t, pool, tt.ID)
+	if count != 1 {
+		t.Errorf("after 8th send, audit count = %d, want 1", count)
+	}
+
+	// 9th send also above threshold → must NOT add a second row.
+	_, _ = svc.Enqueue(ctx, sms.EnqueueInput{
+		TenantID: tt.ID, Sender: "S", Recipient: "56977000018", Text: "x",
+	})
+	count = countQuotaWarnings(t, pool, tt.ID)
+	if count != 1 {
+		t.Errorf("after 9th send, audit count = %d, want 1 (idempotent)", count)
+	}
+}
+
+func countQuotaWarnings(t *testing.T, pool *pgxpool.Pool, tenantID int64) int {
+	t.Helper()
+	var n int
+	err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM audit_log WHERE action='tenant.quota_warning' AND target_id=$1`,
+		strconv.FormatInt(tenantID, 10),
+	).Scan(&n)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	return n
 }
 
 // Test_SetAllowedSenders_TrimsAndDedups verifies the SetAllowedSenders

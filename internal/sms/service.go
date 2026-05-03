@@ -2,8 +2,10 @@ package sms
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -65,6 +67,31 @@ type Service struct {
 
 func NewService(pool *pgxpool.Pool) *Service {
 	return &Service{pool: pool, q: sqlcgen.New(pool)}
+}
+
+// TenantPolicy is the snapshot of per-tenant send-time state surfaced to
+// HTTP handlers (so they can emit X-Daily-Quota-* response headers). All
+// fields are post-insert when returned alongside Enqueue's result.
+type TenantPolicy struct {
+	DailyLimit *int32 // nil = unlimited
+	SentToday  int64
+}
+
+// LoadTenantPolicy returns the quota snapshot for a tenant. Cheap (one
+// indexed query). HTTP handlers use it after Enqueue to surface
+// quota-usage headers in the response.
+func (s *Service) LoadTenantPolicy(ctx context.Context, tenantID int64) (TenantPolicy, error) {
+	p, err := s.q.GetTenantSendPolicy(ctx, sqlcgen.GetTenantSendPolicyParams{
+		TenantID: tenantID,
+		Since:    pgtype.Timestamptz{Time: startOfDayCLT(time.Now()), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TenantPolicy{}, ErrTenantNotFound
+	}
+	if err != nil {
+		return TenantPolicy{}, err
+	}
+	return TenantPolicy{DailyLimit: p.DailySmsLimit, SentToday: p.SentToday}, nil
 }
 
 // Enqueue validates the input, detects the DCS, counts parts and inserts
@@ -133,7 +160,52 @@ func (s *Service) Enqueue(ctx context.Context, in EnqueueInput) (*Message, error
 		}
 		return nil, fmt.Errorf("insert message: %w", err)
 	}
+
+	// Quota-warning audit: if this insert crossed the 80% threshold for
+	// the first time today, log it once. Cheap when not crossing (just
+	// arithmetic); when crossing, one indexed audit_log lookup.
+	if policy.DailySmsLimit != nil {
+		s.maybeLogQuotaWarning(ctx, in.TenantID, policy.SentToday, int64(*policy.DailySmsLimit))
+	}
+
 	return fromRow(row), nil
+}
+
+// maybeLogQuotaWarning fires a one-shot audit log entry the moment a
+// tenant's daily usage crosses 80%. Idempotent per tenant per day —
+// further sends within the same day don't re-log. Best-effort: errors
+// are swallowed (this is observability, not control flow).
+func (s *Service) maybeLogQuotaWarning(ctx context.Context, tenantID, before, limit int64) {
+	if limit <= 0 {
+		return
+	}
+	threshold := (limit*80 + 99) / 100 // ceil(0.8*limit) without floats
+	after := before + 1
+	if before >= threshold || after < threshold {
+		return // didn't cross with this insert
+	}
+	since := pgtype.Timestamptz{Time: startOfDayCLT(time.Now()), Valid: true}
+	target := strconv.FormatInt(tenantID, 10)
+	exists, err := s.q.HasAuditLogSinceForTarget(ctx, sqlcgen.HasAuditLogSinceForTargetParams{
+		Action:   "tenant.quota_warning",
+		TargetID: target,
+		Since:    since,
+	})
+	if err != nil || exists {
+		return
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"sent_today": after,
+		"limit":      limit,
+		"threshold":  threshold,
+	})
+	tt := "tenant"
+	_ = s.q.AppendAuditLog(ctx, sqlcgen.AppendAuditLogParams{
+		Action:     "tenant.quota_warning",
+		TargetType: &tt,
+		TargetID:   &target,
+		Metadata:   meta,
+	})
 }
 
 // EnqueueBulk inserts N messages, returning per-row results. Rows that fail
